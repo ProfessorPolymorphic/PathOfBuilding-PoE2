@@ -1,0 +1,4 @@
+# Local toolchain (rebuild with setup.sh)
+.luajit/
+.luajit-src/
+.rocks/
