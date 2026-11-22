@@ -199,3 +199,38 @@ def test_chat_without_llm_config_is_503(client, build, monkeypatch):
     monkeypatch.setattr(settings, "LLM_API_KEY", "")
     r = client.post(f"/builds/{build['build_id']}/chat", json={"message": "hi"})
     assert r.status_code == 503 and "not configured" in r.json()["detail"]
+
+
+def test_chat_stream_events(client, build, monkeypatch):
+    import json as _json
+    import main
+    from agent import Agent
+    from fakes import FakeClient, FakeMessage, tool_call
+
+    fake = FakeClient([
+        FakeMessage(content=None, tool_calls=[tool_call(1, "get_stats", {"keys": ["Life"]})]),
+        FakeMessage(content="1,254 life.", tool_calls=None),
+    ])
+
+    def make_agent(session):
+        async def engine_call(cmd, **args):
+            return await main.sessions.call(session, cmd, **args)
+        return Agent(engine_call=engine_call, model="fake", client=fake)
+
+    monkeypatch.setattr(main, "make_agent", make_agent)
+    with client.stream("POST", f"/builds/{build['build_id']}/chat/stream", json={"message": "life?"}) as r:
+        assert r.headers["content-type"].startswith("text/event-stream")
+        body = r.read().decode()
+    events = [(b.split("\n")[0].removeprefix("event: "), _json.loads(b.split("\n")[1].removeprefix("data: ")))
+              for b in body.strip().split("\n\n")]
+    assert [k for k, _ in events] == ["thinking", "tool", "thinking", "answer"]
+    assert events[1][1]["name"] == "get_stats" and events[1][1]["ok"]
+    assert events[-1][1]["answer"] == "1,254 life."
+
+
+def test_chat_stream_reports_errors(client, build, monkeypatch):
+    import settings
+    monkeypatch.setattr(settings, "LLM_API_KEY", "")
+    with client.stream("POST", f"/builds/{build['build_id']}/chat/stream", json={"message": "hi"}) as r:
+        body = r.read().decode()
+    assert body.startswith("event: error") and "not configured" in body

@@ -31,11 +31,12 @@ interface Props {
 export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChanged }: Props) {
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
+  const [progress, setProgress] = useState<Progress | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [entries, pending])
+  }, [entries, pending, progress?.calls.length])
 
   async function send(text: string) {
     const message = text.trim()
@@ -43,16 +44,32 @@ export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChan
     setDraft('')
     setEntries((prev) => [...prev, { role: 'user', text: message }])
     setPending(true)
+    setProgress({ round: 0, calls: [], started: Date.now() })
+    let finished = false
     try {
-      const reply = await api.chat(buildId, message)
-      setEntries((prev) => [...prev, {
-        role: 'assistant', text: reply.answer, toolCalls: reply.tool_calls, tokens: reply.tokens,
-      }])
-      if (reply.tool_calls.some((t) => MUTATING.has(t.name) && t.ok)) onBuildChanged()
+      await api.chatStream(buildId, message, (event) => {
+        if (event.type === 'thinking') {
+          setProgress((p) => p && { ...p, round: event.round })
+        } else if (event.type === 'tool') {
+          setProgress((p) => p && { ...p, calls: [...p.calls, event.call] })
+          if (MUTATING.has(event.call.name) && event.call.ok) onBuildChanged()
+        } else if (event.type === 'answer') {
+          finished = true
+          const { reply } = event
+          setEntries((prev) => [...prev, {
+            role: 'assistant', text: reply.answer, toolCalls: reply.tool_calls, tokens: reply.tokens,
+          }])
+        } else {
+          finished = true
+          setEntries((prev) => [...prev, { role: 'error', text: event.detail }])
+        }
+      })
+      if (!finished) throw new Error('The connection closed before an answer arrived.')
     } catch (err) {
       setEntries((prev) => [...prev, { role: 'error', text: err instanceof Error ? err.message : String(err) }])
     } finally {
       setPending(false)
+      setProgress(null)
     }
   }
 
@@ -92,7 +109,7 @@ export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChan
         {entries.map((e, i) => (
           <Entry key={i} entry={e} />
         ))}
-        {pending && <div className="msg assistant pending">Consulting the engine…</div>}
+        {pending && progress && <Working progress={progress} />}
         <div ref={endRef} />
       </div>
 
@@ -109,6 +126,46 @@ export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChan
         <button onClick={() => void send(draft)} disabled={pending || !draft.trim() || !chatConfigured}>Send</button>
       </div>
     </section>
+  )
+}
+
+interface Progress {
+  round: number
+  calls: ToolCall[]
+  started: number
+}
+
+// Live view while the agent works: elapsed time, model round, and engine calls so far.
+function Working({ progress }: { progress: Progress }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const seconds = Math.max(0, Math.round((now - progress.started) / 1000))
+  const step = progress.round <= 1 && progress.calls.length === 0
+    ? 'Reading your question'
+    : progress.calls.length > 0 && progress.round > 1
+      ? 'Working through the engine results'
+      : 'Thinking'
+  return (
+    <div className="msg assistant working" aria-live="polite">
+      <div className="working-head">
+        <span className="spinner" aria-hidden />
+        <span>{step}…</span>
+        <span className="muted">{seconds}s</span>
+      </div>
+      {progress.calls.length > 0 && (
+        <ol className="working-calls">
+          {progress.calls.map((c, i) => (
+            <li key={i} className={c.ok ? '' : 'failed'}>
+              <code>{c.name}</code>
+              {Object.keys(c.args).length > 0 && <span className="tool-args">{formatArgs(c.args)}</span>}
+            </li>
+          ))}
+        </ol>
+      )}
+    </div>
   )
 }
 

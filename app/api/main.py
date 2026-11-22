@@ -11,6 +11,7 @@ Run:  app/api/.venv/bin/uvicorn main:app --app-dir app/api --reload
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -20,7 +21,7 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
@@ -350,6 +351,65 @@ async def chat(build_id: str, body: ChatMessage):
             "tokens": agent.tokens_used - tokens_before,
             "model": agent.model,
         }
+
+
+def _tool_json(e: ToolEvent) -> dict:
+    return {"name": e.name, "args": e.args, "ok": e.ok, "summary": e.summary}
+
+
+@app.post("/builds/{build_id}/chat/stream")
+async def chat_stream(build_id: str, body: ChatMessage):
+    """Like /chat, but streams progress as server-sent events while the agent works:
+    `thinking` (a model request started), `tool` (an engine call finished),
+    then exactly one of `answer` or `error`."""
+    session = sessions.get(build_id)
+    queue: asyncio.Queue[tuple[str, dict] | None] = asyncio.Queue()
+
+    async def run() -> None:
+        async with session.chat_lock:
+            try:
+                if session.agent is None:
+                    session.agent = make_agent(session)
+                agent = session.agent
+                tokens_before = agent.tokens_used
+                tools: list[ToolEvent] = []
+
+                def on_tool(e: ToolEvent) -> None:
+                    tools.append(e)
+                    queue.put_nowait(("tool", _tool_json(e)))
+
+                agent.on_tool = on_tool
+                agent.on_round = lambda n: queue.put_nowait(("thinking", {"round": n}))
+                try:
+                    answer = await agent.ask(body.message)
+                finally:
+                    agent.on_tool = agent.on_round = None
+                queue.put_nowait(("answer", {
+                    "answer": answer,
+                    "tool_calls": [_tool_json(e) for e in tools],
+                    "tokens": agent.tokens_used - tokens_before,
+                    "model": agent.model,
+                }))
+            except Exception as e:  # LLM down / not configured / engine crash
+                log.warning("chat failed: %s", e)
+                detail = str(e) if isinstance(e, (EngineError, settings.LLMNotConfigured)) \
+                    else f"language model request failed: {e}"
+                queue.put_nowait(("error", {"detail": detail}))
+            finally:
+                queue.put_nowait(None)
+
+    # The agent runs to completion even if the browser disconnects, so the
+    # conversation history stays consistent.
+    task = asyncio.create_task(run())
+
+    async def events():
+        while (item := await queue.get()) is not None:
+            kind, data = item
+            yield f"event: {kind}\ndata: {json.dumps(data)}\n\n"
+        await task
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.delete("/builds/{build_id}/chat", status_code=204)

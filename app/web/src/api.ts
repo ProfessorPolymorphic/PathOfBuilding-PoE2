@@ -100,7 +100,55 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   return data as T
 }
 
+export type ChatEvent =
+  | { type: 'thinking'; round: number }
+  | { type: 'tool'; call: ToolCall }
+  | { type: 'answer'; reply: ChatReply }
+  | { type: 'error'; detail: string }
+
+// Streams /chat/stream (server-sent events over a POST), calling onEvent as each arrives.
+async function chatStream(id: string, message: string, onEvent: (e: ChatEvent) => void): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch(`/builds/${id}/chat/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message }),
+    })
+  } catch {
+    throw new ApiError(0, 'Can’t reach the engine API. Is it running on port 8000?')
+  }
+  if (!res.ok || !res.body) {
+    const data = await res.json().catch(() => ({}))
+    throw new ApiError(res.status, typeof data.detail === 'string' ? data.detail : res.statusText)
+  }
+  const reader = res.body.pipeThrough(new TextDecoderStream()).getReader()
+  let buffer = ''
+  for (;;) {
+    const { value, done } = await reader.read()
+    if (done) break
+    buffer += value
+    let sep: number
+    while ((sep = buffer.indexOf('\n\n')) >= 0) {
+      const block = buffer.slice(0, sep)
+      buffer = buffer.slice(sep + 2)
+      let kind = 'message'
+      let data = ''
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event: ')) kind = line.slice(7)
+        else if (line.startsWith('data: ')) data += line.slice(6)
+      }
+      const payload = data ? JSON.parse(data) : {}
+      if (kind === 'thinking') onEvent({ type: 'thinking', round: payload.round })
+      else if (kind === 'tool') onEvent({ type: 'tool', call: payload as ToolCall })
+      else if (kind === 'answer') onEvent({ type: 'answer', reply: payload as ChatReply })
+      else if (kind === 'error') onEvent({ type: 'error', detail: payload.detail ?? 'unknown error' })
+    }
+  }
+}
+
 export const api = {
+  chatStream,
   health: () => request<Health>('GET', '/health'),
   loadBuild: (code: string) =>
     request<{ build_id: string; summary: BuildSummary }>('POST', '/builds', { code }),

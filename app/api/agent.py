@@ -196,6 +196,7 @@ class Agent:
         base_url=settings.LLM_BASE_URL, api_key=settings.LLM_API_KEY, timeout=120))
     messages: list[dict] = field(default_factory=lambda: [{"role": "system", "content": SYSTEM_PROMPT}])
     on_tool: Callable[[ToolEvent], None] | None = None
+    on_round: Callable[[int], None] | None = None  # called before each model request (1-based)
     tokens_used: int = 0
 
     def reset(self) -> None:
@@ -238,6 +239,8 @@ class Agent:
         self.messages.append({"role": "user", "content": question})
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             final_round = round_no == MAX_TOOL_ROUNDS
+            if self.on_round:
+                self.on_round(round_no + 1)
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
