@@ -23,6 +23,14 @@ RUN mkdir -p ${ROCKS_LIB} \
 	&& gcc -O2 -fPIC -shared -I${LUA_INC} -o ${ROCKS_LIB}/lfs.so luafilesystem-*/src/lfs.c \
 	&& /opt/luajit/bin/luajit -e 'package.cpath="/opt/rocks/lib/lua/5.1/?.so"; require("lua-utf8"); require("lfs"); print("native modules OK")'
 
+# --- web app ---
+FROM node:22-slim AS web
+WORKDIR /web
+COPY app/web/package.json app/web/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY app/web/ ./
+RUN npm run build
+
 # --- python deps ---
 FROM python:3.13-slim-bookworm AS pydeps
 COPY app/api/requirements.txt app/api/requirements-dev.txt /tmp/
@@ -46,6 +54,7 @@ COPY --chown=pob runtime/lua runtime/lua
 COPY --chown=pob src src
 COPY --chown=pob app/engine app/engine
 COPY --chown=pob app/api app/api
+COPY --from=web --chown=pob /web/dist app/web/dist
 
 USER pob
 EXPOSE 8000

@@ -18,7 +18,7 @@ services:
         required: false   # without it the API runs; /chat answers 503
     environment:
       POB_MAX_WORKERS: "4"
-      CORS_ORIGINS: "http://localhost:5173"
+      CORS_ORIGINS: "http://localhost:5173"   # only for the Vite dev server; the built app is same-origin
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped

@@ -21,6 +21,8 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 import buildcode
@@ -357,3 +359,11 @@ async def reset_chat(build_id: str):
     async with session.chat_lock:
         if session.agent:
             session.agent.reset()
+
+
+# -- web app --
+# Serve the built React app (app/web/dist) at / when it exists, e.g. in the Docker image.
+# Mounted last so every API route above takes precedence. In development, Vite serves it.
+WEB_DIST = Path(os.getenv("WEB_DIST", Path(__file__).resolve().parent.parent / "web" / "dist"))
+if (WEB_DIST / "index.html").exists():
+    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="web")

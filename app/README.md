@@ -3,8 +3,11 @@
 Everything outside `src/` that we add lives here, so pulling upstream PoB updates stays conflict-free.
 
 ```
-React (todo)  ──HTTP──▶  api/ (FastAPI)  ──JSON lines──▶  engine/worker.lua (LuaJIT + PoB headless)
+web/ (React)  ──HTTP──▶  api/ (FastAPI + LLM agent)  ──JSON lines──▶  engine/worker.lua (LuaJIT + PoB headless)
 ```
+
+**Quickest start:** `docker compose -f app/docker-compose.yml up -d --build`, then open
+http://localhost:8000 and paste a PoE2 build code.
 
 ## Setup (macOS)
 
@@ -13,6 +16,16 @@ app/engine/setup.sh                                    # pinned LuaJIT + native 
 python3 -m venv app/api/.venv
 app/api/.venv/bin/pip install -r app/api/requirements-dev.txt
 ```
+
+## Web app (development)
+
+```sh
+cd app/web && npm install
+npm run dev          # http://localhost:5173, proxies API calls to localhost:8000
+```
+
+Needs the API running on :8000 (Docker or uvicorn). `npm run build` writes `web/dist`,
+which FastAPI serves at `/` when present; the Docker image builds and serves it.
 
 ## Chat (LLM agent)
 
