@@ -25,6 +25,11 @@ app/api/.venv/bin/python app/api/chat.py                         # chat about th
 app/api/.venv/bin/python app/api/chat.py --code-file mycode.txt  # ...or your own build
 ```
 
+Over HTTP: `POST /builds/{id}/chat` with `{"message": "..."}` returns the answer, the tool
+calls made and tokens used; the conversation continues per build until
+`DELETE /builds/{id}/chat`. Without LLM settings the endpoint answers 503 and the rest of
+the API works normally.
+
 `api/agent.py` gives the model engine tools (summary, stats, item details, passive
 search/rank/compare, item compare, config, main skill). The model chooses tools and
 explains; all numbers come from the engine. Tool calls are shown dimmed in the chat.
@@ -36,6 +41,10 @@ docker compose -f app/docker-compose.yml up -d --build                          
 docker compose -f app/docker-compose.yml run --rm --no-deps api pytest app/api  # tests inside the image
 docker compose -f app/docker-compose.yml down
 ```
+
+The container reads `app/.env` for the LLM settings. Its network is pinned to
+`10.20.60.0/24`: Docker's default 172.x subnets can swallow MindRouter's campus/VPN address
+(172.27.x), making it unreachable from the container.
 
 The image (~330 MB) builds its own pinned LuaJIT and native modules and leaves out
 GUI textures (`app/Dockerfile.dockerignore`); the in-image test run confirms the

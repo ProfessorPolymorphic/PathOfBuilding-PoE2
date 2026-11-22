@@ -24,6 +24,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
 
 import buildcode
+import settings
+from agent import Agent, ToolEvent
 from engine import EngineCrashed, EngineError, EngineWorker
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
@@ -41,6 +43,8 @@ class Session:
         self.id = build_id
         self.worker = EngineWorker()
         self.last_used = time.monotonic()
+        self.agent: Agent | None = None  # created on first chat message
+        self.chat_lock = asyncio.Lock()  # one question at a time per build
 
 
 class SessionManager:
@@ -113,6 +117,11 @@ async def engine_crashed(_: Request, exc: EngineCrashed):
     return JSONResponse(status_code=503, content={"detail": "engine crashed; retry the request"})
 
 
+@app.exception_handler(settings.LLMNotConfigured)
+async def llm_not_configured(_: Request, exc: settings.LLMNotConfigured):
+    return JSONResponse(status_code=503, content={"detail": str(exc)})
+
+
 @app.exception_handler(buildcode.InvalidBuildCode)
 async def bad_code(_: Request, exc: buildcode.InvalidBuildCode):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
@@ -148,6 +157,20 @@ class ConfigValue(BaseModel):
     value: bool | int | float | str | None
 
 
+class ChatMessage(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+
+
+def make_agent(session: Session) -> Agent:
+    """Agent whose engine calls go through the session manager (so parked workers revive)."""
+    settings.require_llm_configured()
+
+    async def engine_call(cmd: str, **args: Any) -> Any:
+        return await sessions.call(session, cmd, **args)
+
+    return Agent(engine_call=engine_call)
+
+
 class MainSkill(BaseModel):
     index: int = Field(..., ge=1, description="Skill group index from the summary")
 
@@ -160,6 +183,7 @@ class MainSkill(BaseModel):
 async def health():
     return {
         "ok": True,
+        "chat_configured": not settings.missing_llm_settings(),
         "builds": len(sessions.sessions),
         "running_workers": sum(s.worker.alive for s in sessions.sessions.values()),
         "max_workers": MAX_WORKERS,
@@ -296,3 +320,40 @@ async def set_config(build_id: str, var: str, body: ConfigValue):
 @app.post("/builds/{build_id}/benchmark")
 async def benchmark(build_id: str, samples: int = Query(50, ge=1, le=1000)):
     return await sessions.call(sessions.get(build_id), "benchmark", samples=samples)
+
+
+# -- chat --
+
+@app.post("/builds/{build_id}/chat")
+async def chat(build_id: str, body: ChatMessage):
+    """Ask the build agent a question. The conversation continues until reset."""
+    session = sessions.get(build_id)
+    async with session.chat_lock:
+        if session.agent is None:
+            session.agent = make_agent(session)
+        agent = session.agent
+        events: list[ToolEvent] = []
+        agent.on_tool = events.append
+        tokens_before = agent.tokens_used
+        try:
+            answer = await agent.ask(body.message)
+        except (EngineError, EngineCrashed):
+            raise
+        except Exception as e:  # model endpoint down, VPN off, quota exhausted...
+            log.warning("LLM request failed: %s", e)
+            raise HTTPException(502, f"language model request failed: {e}") from e
+        return {
+            "answer": answer,
+            "tool_calls": [{"name": e.name, "args": e.args, "ok": e.ok, "summary": e.summary} for e in events],
+            "tokens": agent.tokens_used - tokens_before,
+            "model": agent.model,
+        }
+
+
+@app.delete("/builds/{build_id}/chat", status_code=204)
+async def reset_chat(build_id: str):
+    """Start a fresh conversation (build changes made via set_config are kept)."""
+    session = sessions.get(build_id)
+    async with session.chat_lock:
+        if session.agent:
+            session.agent.reset()

@@ -13,9 +13,20 @@ services:
     image: pob-poe2-api:dev
     ports:
       - "8000:8000"
+    env_file:
+      - path: .env        # LLM_BASE_URL / LLM_API_KEY / LLM_MODEL (app/.env, git-ignored)
+        required: false   # without it the API runs; /chat answers 503
     environment:
       POB_MAX_WORKERS: "4"
       CORS_ORIGINS: "http://localhost:5173"
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+
+# Pin the subnet: Docker's default picks from 172.16-31.x, and MindRouter's campus/VPN
+# address (172.27.x) falls in that range, which made it unreachable from the container.
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 10.20.60.0/24

@@ -159,3 +159,43 @@ def test_item_details(client, build):
     text = r["items"][0]["text"]
     assert "Victory Corona" in text and "+35% to Lightning Resistance" in text
     assert "{" not in text  # PoB's internal mod tags are cleaned up
+
+
+def test_chat_endpoint(client, build, monkeypatch):
+    import main
+    from agent import Agent
+    from fakes import FakeClient, FakeMessage, tool_call
+
+    fake = FakeClient([
+        FakeMessage(content=None, tool_calls=[tool_call(1, "get_stats", {"keys": ["ColdResist"]})]),
+        FakeMessage(content="Your cold resistance is 12%.", tool_calls=None),
+        FakeMessage(content="Still 12%.", tool_calls=None),
+    ])
+
+    def make_agent(session):
+        async def engine_call(cmd, **args):
+            return await main.sessions.call(session, cmd, **args)
+        return Agent(engine_call=engine_call, model="fake", client=fake)
+
+    monkeypatch.setattr(main, "make_agent", make_agent)
+    bid = build["build_id"]
+    r = client.post(f"/builds/{bid}/chat", json={"message": "cold res?"}).json()
+    assert r["answer"] == "Your cold resistance is 12%."
+    assert r["tool_calls"] == [{"name": "get_stats", "args": {"keys": ["ColdResist"]}, "ok": True, "summary": r["tool_calls"][0]["summary"]}]
+    # The engine's real answer reached the model.
+    assert any(m.get("content") == '{"ColdResist":12}' for m in fake.requests[1] if m["role"] == "tool")
+
+    # The conversation continues on the same agent...
+    r2 = client.post(f"/builds/{bid}/chat", json={"message": "and now?"}).json()
+    assert r2["answer"] == "Still 12%."
+    assert sum(m["role"] == "user" for m in fake.requests[-1]) == 2
+    # ...until it's reset.
+    assert client.delete(f"/builds/{bid}/chat").status_code == 204
+    assert main.sessions.get(bid).agent.messages[-1]["role"] == "system"
+
+
+def test_chat_without_llm_config_is_503(client, build, monkeypatch):
+    import settings
+    monkeypatch.setattr(settings, "LLM_API_KEY", "")
+    r = client.post(f"/builds/{build['build_id']}/chat", json={"message": "hi"})
+    assert r.status_code == 503 and "not configured" in r.json()["detail"]

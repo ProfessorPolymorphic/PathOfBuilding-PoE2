@@ -27,8 +27,22 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "")
 LLM_MODEL = os.getenv("LLM_MODEL", "")
 
 
+def missing_llm_settings() -> list[str]:
+    return [k for k, v in {"LLM_API_KEY": LLM_API_KEY, "LLM_MODEL": LLM_MODEL}.items()
+            if not v or v.startswith("mr2_paste")]
+
+
 def require_llm() -> None:
-    missing = [k for k, v in {"LLM_API_KEY": LLM_API_KEY, "LLM_MODEL": LLM_MODEL}.items()
-               if not v or v.startswith("mr2_paste")]
-    if missing:
+    """For CLIs: exit with a helpful message if the LLM isn't configured."""
+    if missing := missing_llm_settings():
         raise SystemExit(f"Set {', '.join(missing)} in {ENV_FILE} (see app/.env.example)")
+
+
+class LLMNotConfigured(RuntimeError):
+    pass
+
+
+def require_llm_configured() -> None:
+    """For the API: raise instead of exiting the server."""
+    if missing := missing_llm_settings():
+        raise LLMNotConfigured(f"chat is not configured: set {', '.join(missing)} (see app/.env.example)")
