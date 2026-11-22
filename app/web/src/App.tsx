@@ -48,7 +48,7 @@ export default function App() {
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 404) {
-          setNotice('The server restarted, so your previous build was unloaded. Paste its code again.')
+          setNotice('The server no longer has your previous build. Paste its code again to continue.')
         } else {
           setNotice(err instanceof Error ? err.message : String(err))
         }
@@ -76,9 +76,22 @@ export default function App() {
     setNotice(null)
   }
 
-  const refreshBuild = useCallback(() => {
-    if (buildId) api.summary(buildId).then(setBuild).catch(() => undefined)
+  // The server no longer has this build (it was deleted, or its saved copy was lost).
+  const buildLost = useCallback(() => {
+    if (buildId) save(chatKey(buildId), null)
+    save(BUILD_KEY, null)
+    setBuildId(null)
+    setBuild(null)
+    setEntriesState([])
+    setNotice('The server no longer has that build loaded. Paste its code again to continue.')
   }, [buildId])
+
+  const refreshBuild = useCallback(() => {
+    if (!buildId) return
+    api.summary(buildId).then(setBuild).catch((err) => {
+      if (err instanceof ApiError && err.status === 404) buildLost()
+    })
+  }, [buildId, buildLost])
 
   const loading = buildId && !build
 
@@ -121,6 +134,7 @@ export default function App() {
             setEntries={setEntries}
             chatConfigured={chatConfigured}
             onBuildChanged={refreshBuild}
+            onBuildLost={buildLost}
           />
         </main>
       )}

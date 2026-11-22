@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { api, type ToolCall } from '../api'
+import { api, ApiError, type ToolCall } from '../api'
 
 export interface ChatEntry {
   role: 'user' | 'assistant' | 'error'
@@ -26,9 +26,10 @@ interface Props {
   setEntries: (update: (prev: ChatEntry[]) => ChatEntry[]) => void
   chatConfigured: boolean
   onBuildChanged: () => void
+  onBuildLost: () => void
 }
 
-export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChanged }: Props) {
+export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChanged, onBuildLost }: Props) {
   const [draft, setDraft] = useState('')
   const [pending, setPending] = useState(false)
   const [progress, setProgress] = useState<Progress | null>(null)
@@ -66,6 +67,10 @@ export function Chat({ buildId, entries, setEntries, chatConfigured, onBuildChan
       })
       if (!finished) throw new Error('The connection closed before an answer arrived.')
     } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        onBuildLost()
+        return
+      }
       setEntries((prev) => [...prev, { role: 'error', text: err instanceof Error ? err.message : String(err) }])
     } finally {
       setPending(false)

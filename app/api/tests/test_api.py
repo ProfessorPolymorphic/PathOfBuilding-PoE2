@@ -237,3 +237,32 @@ def test_chat_stream_reports_errors(client, build, monkeypatch):
     with client.stream("POST", f"/builds/{build['build_id']}/chat/stream", json={"message": "hi"}) as r:
         body = r.read().decode()
     assert body.startswith("event: error") and "not configured" in body
+
+
+def test_build_survives_server_restart(client, build):
+    """Builds are saved to disk; after a restart (sessions forgotten) the id still works,
+    including changes made before the restart."""
+    import asyncio
+    import main
+
+    bid = build["build_id"]
+    client.post(f"/builds/{bid}/items/equip", json={"slot": "Helmet", "item": HELMET})
+    # Simulate a restart: stop the worker and forget every session.
+    session = main.sessions.sessions.pop(bid)
+    client.portal.call(session.worker.close) if hasattr(client, "portal") else asyncio.run(session.worker.close())
+    r = client.get(f"/builds/{bid}")
+    assert r.status_code == 200
+    assert next(i["name"] for i in r.json()["items"] if i["slot"] == "Helmet") == "Doom Crown, Hallowed Crown"
+
+
+def test_deleted_build_is_gone_for_good(client):
+    bid = client.post("/builds", json={"xml": BUILD_XML}).json()["build_id"]
+    assert client.delete(f"/builds/{bid}").status_code == 204
+    import main
+    main.sessions.sessions.pop(bid, None)
+    assert client.get(f"/builds/{bid}").status_code == 404
+
+
+def test_unknown_or_malformed_ids_are_404(client):
+    assert client.get("/builds/000000000000").status_code == 404
+    assert client.get("/builds/..%2F..%2Fetc").status_code == 404

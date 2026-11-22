@@ -47,7 +47,9 @@ ENV POB_LUAJIT=/opt/luajit/bin/luajit \
 	POB_ROCKS=/opt/rocks \
 	PYTHONUNBUFFERED=1
 
-RUN useradd --create-home --uid 1000 pob
+RUN useradd --create-home --uid 1000 pob \
+	&& mkdir -p /data/builds && chown -R pob /data
+ENV POB_STATE_DIR=/data/builds
 WORKDIR /pob
 # Only what the headless engine and API need (see app/Dockerfile.dockerignore).
 COPY --chown=pob runtime/lua runtime/lua

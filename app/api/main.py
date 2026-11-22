@@ -14,6 +14,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -29,12 +30,15 @@ from pydantic import BaseModel, Field, model_validator
 import buildcode
 import settings
 from agent import Agent, ToolEvent
-from engine import EngineCrashed, EngineError, EngineWorker
+from engine import MUTATING, EngineCrashed, EngineError, EngineWorker
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("pob.api")
 
 MAX_WORKERS = int(os.getenv("POB_MAX_WORKERS", "4"))
+# Loaded builds are saved here as XML so they survive server restarts and rebuilds.
+STATE_DIR = Path(os.getenv("POB_STATE_DIR", Path(__file__).resolve().parent.parent / ".state" / "builds"))
+BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 
 
 # ---------------------------------------------------------------------------
@@ -57,10 +61,45 @@ class SessionManager:
         self._lock = asyncio.Lock()
 
     def get(self, build_id: str) -> Session:
-        session = self.sessions.get(build_id)
+        session = self.sessions.get(build_id) or self._restore(build_id)
         if not session:
             raise HTTPException(404, f"no build with id {build_id}")
         session.last_used = time.monotonic()
+        return session
+
+    # -- persistence: one XML (+ name) file per build; workers reload it on demand --
+
+    def _paths(self, build_id: str) -> tuple[Path, Path]:
+        return STATE_DIR / f"{build_id}.xml", STATE_DIR / f"{build_id}.json"
+
+    def _persist(self, session: Session) -> None:
+        if not session.worker.xml_snapshot:
+            return
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            xml_path, meta_path = self._paths(session.id)
+            tmp = xml_path.with_suffix(".tmp")
+            tmp.write_text(session.worker.xml_snapshot)
+            tmp.replace(xml_path)  # atomic: never leave a half-written build
+            meta_path.write_text(json.dumps({"name": session.worker.build_name}))
+        except OSError as e:
+            log.warning("could not save build %s: %s", session.id, e)
+
+    def _restore(self, build_id: str) -> Session | None:
+        """Bring back a build saved before a restart. Its worker starts on first use."""
+        if not BUILD_ID_RE.match(build_id):
+            return None
+        xml_path, meta_path = self._paths(build_id)
+        if not xml_path.exists():
+            return None
+        session = Session(build_id)
+        session.worker.xml_snapshot = xml_path.read_text()
+        try:
+            session.worker.build_name = json.loads(meta_path.read_text()).get("name") or "build"
+        except (OSError, ValueError):
+            pass
+        self.sessions[build_id] = session
+        log.info("restored build %s from disk", build_id)
         return session
 
     async def create(self) -> Session:
@@ -80,12 +119,17 @@ class SessionManager:
     async def call(self, session: Session, cmd: str, **args: Any) -> Any:
         if not session.worker.alive:
             await self.make_room(keep=session)
-        return await session.worker.call(cmd, **args)
+        result = await session.worker.call(cmd, **args)
+        if cmd in MUTATING:
+            self._persist(session)
+        return result
 
     async def delete(self, build_id: str) -> None:
         session = self.sessions.pop(build_id, None)
         if session:
             await session.worker.close()
+        for path in self._paths(build_id):
+            path.unlink(missing_ok=True)
 
     async def close_all(self) -> None:
         await asyncio.gather(*(s.worker.close() for s in self.sessions.values()))

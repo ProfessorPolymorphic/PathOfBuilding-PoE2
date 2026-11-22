@@ -1,2 +1,4 @@
 # Local secrets
 .env
+# Saved builds (API state)
+.state/
