@@ -58,6 +58,9 @@ def test_load_summary(build):
     assert s["mainSkill"] == "Shred"
     assert stat(s["stats"], "Life") == 1254
     assert all(g["activeSkill"] for g in s["skills"])
+    shred = next(g for g in s["skills"] if g["isMain"])
+    # Regression: PoE2 keeps gem data on gem.gemData, which once hid every support gem.
+    assert [x["name"] for x in shred["gems"] if x["support"]] == ["Elemental Armament II", "Rapid Attacks I", "Heft"]
 
 
 def test_invalid_code(client):

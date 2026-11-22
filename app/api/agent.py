@@ -30,40 +30,48 @@ MAX_TOOL_RESULT_CHARS = 16000  # keep one oversized result from eating the conte
 SYSTEM_PROMPT = """\
 You are a build advisor for **Path of Exile 2** (not Path of Exile 1), working with the
 user's character loaded into Path of Building (PoB), the community's calculation engine.
+A snapshot of the build and its active Configuration settings is provided at the start of
+the conversation; use tools for anything else.
 
-Ground rules:
-- The engine is the source of truth. Every number you state must come from a tool result
-  in this conversation. Never estimate or recall stats, damage, or mechanics values from memory.
-- Before recommending a change (passives, items, config), test it with a compare_* tool and
-  report the before -> after numbers. If you can't test something, say so plainly.
-- PoE2 differs from PoE1 (skill gems/supports, spirit, the passive tree, ascendancies, item
-  bases, mechanics). If you are unsure something exists in PoE2, check the tree with
-  search_passives or say you're unsure rather than borrowing PoE1 knowledge.
-- compare_* tools are what-ifs and do not change the build. set_config and set_main_skill
-  DO change the build; tell the user when you use them and why.
+## What counts as true
+- Numbers: every number you state must come from the build snapshot or a tool result in this
+  conversation. Never estimate or recall values from memory.
+- How something is calculated: only from explain_stat (PoB's own calculation) or
+  stat_sources (the modifiers feeding a stat). Never present a formula or mechanic from memory.
+- What a gem, support or skill does: only from describe_skill. What a passive does: only from
+  search_passives / rank_passives results. What an item does: only from get_item_details.
+- Game mechanics in general (how damage types, ailments, energy shield, recovery, etc. work):
+  you have no tool for these, and PoE2 changed many of them from PoE1. Do not state them as
+  fact. If one matters, say you can't verify it here.
+- If you can't verify something, say so plainly; a short honest answer beats a confident guess.
+
+## How to investigate
+- "Why is X low/high?": use explain_stat and/or stat_sources for X before answering, and name
+  the specific contributors (items, passives, base/penalty values).
+- Before recommending a change (passives, items, config), test it with a compare_* tool and give
+  before -> after numbers. Gains don't add up: test combinations in one compare_passives call.
+- For "best nodes" questions use rank_passives (one call ranks every candidate).
+- Configuration matters: the snapshot lists active settings (e.g. resistance penalty, enemy type,
+  conditions). When they explain a number, say so. compare_* tools don't change the build;
+  set_config and set_main_skill do. If you change config to test something, restore it
+  (value null clears an option) and tell the user.
 - You can't search the trade site. To evaluate gear ideas, write a plausible PoE2 item and
-  test it with compare_item, making clear it's a hypothetical item.
-- Config conditions (enemy shocked, charges, resistance penalty, etc.) strongly affect numbers.
-  If numbers don't add up (e.g. gear resistances don't sum to the shown resistance), check
-  list_config(set_only=true) and say what's assumed.
-- Each rank_passives / compare result is for that change alone. Gains don't simply add up;
-  test a combination with one compare_passives call before quoting its combined value.
-- If you change config to test something, put it back afterwards (value null clears an option)
-  and tell the user.
-- Keep engine facts and your own reasoning visibly separate. Don't present formulas, mechanics
-  or "how X is calculated" as fact unless a tool result shows it; label explanations as
-  approximate. Don't claim what a gem, aura or item does unless a tool result shows it.
+  test it with compare_item, labelled as hypothetical.
 
-Answer style: don't narrate your process ("now I have everything", "here is the final
-answer"); just answer. Lead with the direct answer, then the evidence (key numbers, deltas), then
-optional next steps. Be concise; use short lists or small tables. Round numbers sensibly.
+## Answer style
+Don't narrate your process; just answer. Lead with the direct answer, then the evidence (key
+numbers, contributors, deltas), then optional next steps. Be concise: short lists or small
+tables. Round sensibly.
 
-Useful raw stat keys for get_stats: Life, EnergyShield, Mana, Spirit, SpiritUnreserved,
+Useful stat keys (get_stats, explain_stat): Life, EnergyShield, Mana, Spirit, SpiritUnreserved,
 TotalDPS, CombinedDPS, FullDPS, AverageHit, Speed, CritChance, CritMultiplier, HitChance,
 Armour, Evasion, PhysicalDamageReduction, EvadeChance, DeflectChance, TotalEHP,
 FireResist, ColdResist, LightningResist, ChaosResist (and *ResistOverCap),
 PhysicalMaximumHitTaken, FireMaximumHitTaken, ColdMaximumHitTaken,
 LightningMaximumHitTaken, ChaosMaximumHitTaken, Str, Dex, Int, LifeRegenRecovery.
+Modifier names (stat_sources): Life, EnergyShield, Mana, Armour, Evasion, ColdResist,
+ElementalResist, ColdResistMax, ElementalResistMax, ChaosResist, Damage, PhysicalDamage,
+ElementalDamage, ColdDamage, Speed, CritChance, CritMultiplier, Accuracy, Spirit, ...
 """
 
 
@@ -86,6 +94,20 @@ TOOLS = [
         "Raw engine output values by key (see the system prompt for common keys). "
         "Unknown keys return 'n/a'.",
         {"keys": {"type": "array", "items": {"type": "string"}}}, ["keys"]),
+    _fn("explain_stat",
+        "PoB's own step-by-step calculation of a stat for this build (the Calcs tab breakdown), "
+        "e.g. how a max hit, energy shield, life or attack speed value was derived. Use this "
+        "instead of describing formulas from memory.",
+        {"stat": {"type": "string", "description": "Output key, e.g. ColdMaximumHitTaken, EnergyShield, Life, Speed"}},
+        ["stat"]),
+    _fn("stat_sources",
+        "Every active modifier feeding one or more modifier names, with its type (BASE/INC/MORE/...), "
+        "value and source (item, passive, skill, base/penalty, config). Answers 'where does my X "
+        "come from?'. Resistances are fed by both e.g. ColdResist and ElementalResist.",
+        {"mods": {"type": "array", "items": {"type": "string"}}}, ["mods"]),
+    _fn("describe_skill",
+        "The real PoE2 description and tags of a skill or support gem from PoB's game data.",
+        {"name": {"type": "string"}}, ["name"]),
     _fn("get_item_details",
         "Full text of equipped items including all mods. Omit slot for every item.",
         {"slot": {"type": "string", "description": "e.g. Helmet, Body Armour, Gloves, Boots, "
@@ -145,6 +167,12 @@ def _engine_request(name: str, args: dict) -> tuple[str, dict]:
         return "summary", {}
     if name == "get_stats":
         return "stats", {"keys": args.get("keys") or []}
+    if name == "explain_stat":
+        return "explain_stat", {"stat": args.get("stat")}
+    if name == "stat_sources":
+        return "stat_sources", {"mods": args.get("mods") or []}
+    if name == "describe_skill":
+        return "describe_skill", {"name": args.get("name")}
     if name == "get_item_details":
         return "item_details", {k: v for k, v in args.items() if k == "slot" and v}
     if name == "search_passives":
@@ -199,8 +227,34 @@ class Agent:
     on_round: Callable[[int], None] | None = None  # called before each model request (1-based)
     tokens_used: int = 0
 
+    preload_context: bool = True
+
     def reset(self) -> None:
         self.messages = self.messages[:1]
+
+    async def _build_context(self) -> str:
+        """Snapshot of the build and active config, given to the model up front so it always
+        knows the assumptions behind the numbers (and needs one fewer round trip)."""
+        summary = await self.engine_call("summary") or {}
+        config = await self.engine_call("list_config", query="", set_only=True) or {}
+        snapshot = {
+            "character": {k: summary.get(k) for k in
+                          ("class", "ascendancy", "level", "mainSkill", "passivePoints", "ascendancyPoints")},
+            "skills": [{"index": g["index"], "active": g.get("activeSkill"), "main": g["isMain"],
+                        "supports": [x["name"] for x in g["gems"] if x["support"]]}
+                       for g in summary.get("skills", []) if g.get("gems")],
+            "items": {i["slot"]: i["name"] for i in summary.get("items", [])},
+            "keystones": summary.get("keystones", []),
+            "notables": summary.get("notables", []),
+            "stats": {r["stat"]: r["value"] for r in (summary.get("stats") or {}).get("player", [])},
+            "active_configuration": [
+                {"var": o["var"], "label": o["label"], "value": o.get("value")}
+                for o in (config or {}).get("options", [])
+            ],
+        }
+        return ("Build snapshot at the start of this conversation (stats are PoB sidebar values; "
+                "config lists every non-default Configuration setting):\n"
+                + json.dumps(_compact(snapshot), separators=(",", ":")))
 
     async def _run_tool(self, name: str, raw_args: str) -> tuple[str, ToolEvent]:
         try:
@@ -236,6 +290,8 @@ class Agent:
             raise
 
     async def _ask(self, question: str) -> str:
+        if self.preload_context and len(self.messages) == 1:
+            self.messages.append({"role": "system", "content": await self._build_context()})
         self.messages.append({"role": "user", "content": question})
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             final_round = round_no == MAX_TOOL_ROUNDS

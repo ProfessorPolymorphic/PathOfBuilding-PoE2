@@ -251,11 +251,13 @@ function commands.summary()
 	for i, group in ipairs(build.skillsTab.socketGroupList) do
 		local gems = {}
 		for _, gem in ipairs(group.gemList) do
+			-- PoE1 PoB sets gem.grantedEffect; PoE2 PoB keeps it on gem.gemData.
+			local ge = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
 			table.insert(gems, {
-				name = gem.grantedEffect and gem.grantedEffect.name or gem.nameSpec,
+				name = ge and ge.name or gem.nameSpec,
 				level = gem.level, quality = gem.quality,
 				enabled = gem.enabled ~= false,
-				support = gem.grantedEffect and gem.grantedEffect.support or false,
+				support = (ge and ge.support) or false,
 			})
 		end
 		local active = group.displaySkillList and group.displaySkillList[group.mainActiveSkill or 1]
@@ -265,6 +267,7 @@ function commands.summary()
 			for _, g in ipairs(gems) do
 				if not g.support and g.enabled then activeName = g.name break end
 			end
+			activeName = activeName or (gems[1] and gems[1].name)
 		end
 		table.insert(skills, {
 			index = i, label = group.label, slot = group.slot,
@@ -318,6 +321,126 @@ function commands.stats(args)
 		return out
 	end
 	return currentStats()
+end
+
+---------------------------------------------------------------------------
+-- Explanations: how the engine arrived at a number (PoB's Calcs tab data)
+---------------------------------------------------------------------------
+
+-- Readable name for a modifier source tag like "Item:14:Victory Corona, Hallowed Crown".
+local function sourceLabel(source)
+	local kind = source:match("^[^:]+") or source
+	if kind == "Item" then
+		return "item: " .. (source:match("^Item:%d+:(.+)") or source)
+	elseif kind == "Tree" then
+		local node = build.spec.nodes[tonumber(source:match("^Tree:(%d+)"))]
+		return "passive: " .. (node and node.dn or source)
+	elseif kind == "Skill" then
+		local id = source:match("^Skill:(.+)")
+		local skill = id and data.skills[id]
+		return "skill: " .. (skill and skill.name or id or source)
+	elseif kind == "Base" then
+		return "base (character/level/difficulty)"
+	end
+	return source:gsub(":", ": ", 1)
+end
+
+local function breakdownLines(t, out, depth)
+	for _, v in ipairs(t) do
+		if type(v) == "string" then table.insert(out, string.rep("  ", depth) .. cleanText(v)) end
+	end
+	if type(t.slots) == "table" then
+		for _, s in ipairs(t.slots) do
+			local parts = { (s.source or "?") .. ": base " .. tostring(s.base) }
+			if s.inc and s.inc ~= "" then table.insert(parts, cleanText(tostring(s.inc)) .. " (increased)") end
+			if s.more and s.more ~= "" then table.insert(parts, cleanText(tostring(s.more)) .. " (more)") end
+			table.insert(parts, "= " .. tostring(s.total))
+			table.insert(out, string.rep("  ", depth) .. table.concat(parts, " "))
+		end
+	end
+end
+
+-- PoB's own explanation of how a stat was calculated.
+-- args: { stat = "ColdMaximumHitTaken" }
+function commands.explain_stat(args)
+	requireBuild()
+	local stat = args.stat
+	local env = build.calcsTab.mainEnv
+	local bd = env.player.breakdown and env.player.breakdown[stat]
+	if type(bd) ~= "table" then
+		local close = {}
+		local lower = tostring(stat):lower()
+		for k in pairs(env.player.breakdown or {}) do
+			if type(k) == "string" and (k:lower():find(lower, 1, true) or lower:find(k:lower(), 1, true)) then
+				table.insert(close, k)
+			end
+		end
+		table.sort(close)
+		error("no breakdown for '" .. tostring(stat) .. "'" ..
+			(#close > 0 and ("; try: " .. table.concat(close, ", ", 1, math.min(#close, 15))) or
+			"; use stat_sources for modifier totals instead"), 0)
+	end
+	local lines = {}
+	breakdownLines(bd, lines, 0)
+	for k, v in pairs(bd) do
+		if type(k) == "string" and k ~= "slots" and type(v) == "table" and type(v[1]) == "string" then
+			table.insert(lines, "[" .. k .. "]")
+			breakdownLines(v, lines, 1)
+		end
+	end
+	local value = env.player.output[stat]
+	return { stat = stat, value = type(value) == "number" and num(value) or nil, lines = lines }
+end
+
+-- Every active modifier feeding the named mods, with where it comes from.
+-- Mod names are PoB's internal names, often the same as stat keys: Life, EnergyShield,
+-- ColdResist, ElementalResist, ColdResistMax, Armour, Evasion, Damage, PhysicalDamage,
+-- Speed, CritChance, Accuracy, Spirit, ...
+-- args: { mods = {"ColdResist", "ElementalResist"} }
+function commands.stat_sources(args)
+	requireBuild()
+	local modDB = build.calcsTab.mainEnv.player.modDB
+	local out = {}
+	for _, name in ipairs(args.mods or {}) do
+		local rows, totals = {}, {}
+		for _, row in ipairs(modDB:Tabulate(nil, nil, name)) do
+			local v = row.value
+			local value = type(v) == "number" and num(v) or tostring(v)
+			table.insert(rows, { type = row.mod.type, value = value, source = sourceLabel(row.mod.source) })
+			if type(v) == "number" then totals[row.mod.type] = (totals[row.mod.type] or 0) + v end
+		end
+		out[name] = { modifiers = rows, totals = totals }
+		if #rows == 0 then out[name].note = "no active modifiers with this name" end
+	end
+	return out
+end
+
+-- Real PoE2 gem text from PoB's data. args: { name = "Shred" }
+function commands.describe_skill(args)
+	local want = tostring(args.name or ""):lower()
+	local exact, partial = nil, {}
+	for _, gem in pairs(data.gems) do
+		local name = gem.name or (gem.grantedEffect and gem.grantedEffect.name)
+		if name then
+			if name:lower() == want then exact = gem break end
+			if name:lower():find(want, 1, true) then table.insert(partial, name) end
+		end
+	end
+	if not exact then
+		table.sort(partial)
+		error("no gem named '" .. tostring(args.name) .. "'" ..
+			(#partial > 0 and ("; did you mean: " .. table.concat(partial, ", ", 1, math.min(#partial, 10))) or ""), 0)
+	end
+	local ge = exact.grantedEffect or {}
+	local tags = {}
+	for tag, on in pairs(exact.tags or {}) do if on then table.insert(tags, tag) end end
+	table.sort(tags)
+	return {
+		name = exact.name, support = ge.support or false,
+		description = ge.description and cleanText(ge.description) or nil,
+		tags = tags,
+		requirements = { str = exact.reqStr, dex = exact.reqDex, int = exact.reqInt },
+	}
 end
 
 -- Full text (mods included) of equipped items. args: { slot = "Helmet" } or {} for all.

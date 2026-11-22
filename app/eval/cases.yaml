@@ -1,0 +1,189 @@
+# Answer-quality test cases for the build agent.
+#
+# Each case asks one question about a build and scores the answer with checks:
+#   numbers:    values the answer must contain (within tolerance). Either a literal
+#               {value: 2296} or computed from the engine before the question is asked:
+#                 {stat: ColdMaximumHitTaken}                      current stat value
+#                 {compare_nodes: {add: [A, B]}, stat: TotalDPS}   what-if delta
+#                 {compare_item: {slot: Helmet, item: "..."}, stat: Life, field: after}
+#   claims:     statements a judge model checks against the answer; expect true = the
+#               answer must do this, false = it must not. {rank_top: {...}} inserts the
+#               engine's actual best node into the claim as {top}.
+#   tools_any:  the agent must have used at least one of these tools.
+#   config_restored: true = the build's config must be unchanged afterwards.
+#
+# global_claims apply to every case. Add your own cases at the bottom; `build` is a file
+# in app/api/tests/fixtures/.
+
+global_claims:
+  - text: "states a general game-mechanics rule as definite fact (for example how a damage type, ailment, energy shield or recovery works) without saying it came from the calculation engine or that it can't be verified"
+    expect: false
+  - text: "narrates its own working process (for example 'now I have everything I need' or 'here is the final answer')"
+    expect: false
+
+cases:
+  - id: cold-max-hit-why
+    build: shaman.xml
+    question: Why is my cold max hit so much lower than my fire max hit?
+    numbers:
+      - {stat: ColdMaximumHitTaken}
+      - {stat: FireMaximumHitTaken}
+    claims:
+      - {text: "says cold resistance is low (around 12%)", expect: true}
+      - {text: "mentions a -60% resistance penalty or negative base resistance as part of the reason", expect: true}
+    tools_any: [explain_stat, stat_sources]
+
+  - id: cold-res-sources
+    build: shaman.xml
+    question: Where does my cold resistance come from?
+    numbers:
+      - {stat: ColdResist}
+    claims:
+      - {text: "lists the helmet, gloves, a ring and the belt as sources of cold resistance", expect: true}
+      - {text: "mentions a -60% penalty or base value", expect: true}
+      - {text: "mentions a passive skill (All Natural) giving elemental resistance", expect: true}
+    tools_any: [stat_sources]
+
+  - id: chaos-res-sources
+    build: shaman.xml
+    question: Why is my chaos resistance only 13%?
+    numbers:
+      - {stat: ChaosResist}
+    claims:
+      - {text: "says the chaos resistance comes from the body armour", expect: true}
+    tools_any: [stat_sources]
+
+  - id: config-assumptions
+    build: shaman.xml
+    question: What configuration settings are active, and how do they affect my numbers?
+    claims:
+      - {text: "mentions a resistance penalty setting", expect: true}
+      - {text: "mentions that the enemy is set to a Pinnacle boss", expect: true}
+
+  - id: es-calculation
+    build: shaman.xml
+    question: How is my energy shield calculated?
+    numbers:
+      - {stat: EnergyShield}
+    claims:
+      - {text: "names the helmet, boots and body armour as the energy shield sources", expect: true}
+    tools_any: [explain_stat, stat_sources]
+
+  - id: life-sources
+    build: shaman.xml
+    question: How much life do I have and where does it come from?
+    numbers:
+      - {stat: Life}
+    claims:
+      - {text: "mentions Strength as a source of life", expect: true}
+    tools_any: [stat_sources, explain_stat]
+
+  - id: attack-speed
+    build: shaman.xml
+    question: What's my attack speed with Shred and how is it calculated?
+    numbers:
+      - {stat: Speed}
+    tools_any: [explain_stat]
+
+  - id: spirit-free
+    build: shaman.xml
+    question: How much spirit do I have left for another aura or buff?
+    numbers:
+      - {stat: SpiritUnreserved}
+
+  - id: best-dps-notables
+    build: shaman.xml
+    question: Which notables within 4 points would add the most Shred DPS?
+    claims:
+      - {text: "names {top} as the best or top option", expect: true, rank_top: {stat: TotalDPS, max_cost: 4, types: [Notable]}}
+      - {text: "presents the DPS gains of several nodes added together as a combined total without saying it was tested", expect: false}
+    tools_any: [rank_passives]
+
+  - id: best-cold-max-hit-nodes
+    build: shaman.xml
+    question: Which passives within 5 points would raise my cold max hit the most?
+    claims:
+      - {text: "names {top} as the best or top option", expect: true, rank_top: {stat: ColdMaximumHitTaken, max_cost: 5, types: [Notable, Normal]}}
+    tools_any: [rank_passives]
+
+  - id: combo-notables
+    build: shaman.xml
+    question: Is taking both Electrified Claw and Dimensional Weakspot worth it? How much DPS would the pair add?
+    numbers:
+      - {compare_nodes: {add: [Electrified Claw, Dimensional Weakspot]}, stat: TotalDPS}
+    tools_any: [compare_passives]
+
+  - id: helmet-compare
+    build: shaman.xml
+    question: |
+      Would this helmet be better than mine?
+      Item Class: Helmets
+      Rarity: Rare
+      Doom Crown
+      Hallowed Crown
+      --------
+      +80 to maximum Life
+      +40% to Cold Resistance
+      +30% to Lightning Resistance
+    numbers:
+      - {compare_item: {slot: Helmet, item: "Item Class: Helmets\nRarity: Rare\nDoom Crown\nHallowed Crown\n--------\n+80 to maximum Life\n+40% to Cold Resistance\n+30% to Lightning Resistance"}, stat: ColdResist, field: after}
+    claims:
+      - {text: "mentions that the new helmet lacks the current helmet's energy shield or armour, or that some stats go down", expect: true}
+    tools_any: [compare_item]
+
+  - id: describe-shred
+    build: shaman.xml
+    question: What does Shred actually do?
+    claims:
+      - {text: "says Shred shapeshifts the character into a Werewolf", expect: true}
+      - {text: "mentions Ice Fragments created when attacking Frozen enemies", expect: true}
+    tools_any: [describe_skill]
+
+  - id: describe-heft
+    build: shaman.xml
+    question: What does the Heft support do for my Shred?
+    claims:
+      - {text: "says Heft increases the maximum physical damage of hits", expect: true}
+    tools_any: [describe_skill]
+
+  - id: shocked-dps
+    build: shaman.xml
+    question: How much more DPS would I do if the enemy was shocked?
+    config_restored: true
+    claims:
+      - {text: "gives a DPS number with the enemy shocked or says it tested it", expect: true}
+
+  - id: price-question
+    build: shaman.xml
+    question: How much is my Victory Corona helmet worth on trade?
+    claims:
+      - {text: "says it cannot check prices or the trade site", expect: true}
+      - {text: "states a specific price or currency amount for the helmet", expect: false}
+
+  - id: chaos-vs-es-mechanic
+    build: shaman.xml
+    question: How does chaos damage interact with my energy shield?
+    claims:
+      - {text: "says it cannot verify this game mechanic with its tools, or clearly marks the explanation as unverified", expect: true}
+      - {text: "states as definite fact how chaos damage interacts with energy shield", expect: false}
+
+  - id: weaknesses
+    build: shaman.xml
+    question: What are the biggest weaknesses of this build?
+    claims:
+      - {text: "mentions cold resistance being low", expect: true}
+      - {text: "mentions that the resistance numbers include a -60% penalty (endgame) setting", expect: true}
+
+  - id: vague-request
+    build: shaman.xml
+    question: make it better
+    claims:
+      - {text: "asks what the player wants to improve, or states what it chose to focus on", expect: true}
+
+  - id: main-skill-dps
+    build: shaman.xml
+    question: What is my main skill and how much DPS does it do?
+    numbers:
+      - {stat: TotalDPS}
+    claims:
+      - {text: "says the main skill is Shred", expect: true}
