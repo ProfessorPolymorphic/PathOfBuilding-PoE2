@@ -14,7 +14,19 @@ python3 -m venv app/api/.venv
 app/api/.venv/bin/pip install -r app/api/requirements-dev.txt
 ```
 
-## Run
+## Docker
+
+```sh
+docker compose -f app/docker-compose.yml up -d --build                          # API on http://localhost:8000/docs
+docker compose -f app/docker-compose.yml run --rm --no-deps api pytest app/api  # tests inside the image
+docker compose -f app/docker-compose.yml down
+```
+
+The image (~330 MB) builds its own pinned LuaJIT and native modules and leaves out
+GUI textures (`app/Dockerfile.dockerignore`); the in-image test run confirms the
+engine doesn't need them.
+
+## Run natively
 
 ```sh
 app/api/.venv/bin/uvicorn main:app --app-dir app/api --reload   # http://localhost:8000/docs

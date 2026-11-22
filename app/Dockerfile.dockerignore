@@ -1,0 +1,19 @@
+# Build context is the repo root; ship only what the headless engine + API need.
+*
+!src/
+!runtime/lua/
+!app/engine/
+!app/api/
+
+# GUI textures: the headless engine never draws (verified by running the tests in-image).
+**/*.png
+**/*.jpg
+**/*.dds.zst
+
+# Local toolchain / caches (the image builds its own).
+app/engine/.luajit
+app/engine/.luajit-src
+app/engine/.rocks
+app/api/.venv
+**/__pycache__
+**/.pytest_cache

@@ -10,14 +10,18 @@ ARG LUAJIT_COMMIT=2460b3ff93a1c955de3d62cfc825de7d68dc272e
 RUN git clone https://github.com/LuaJIT/LuaJIT && cd LuaJIT && git checkout ${LUAJIT_COMMIT} \
 	&& make -j"$(nproc)" PREFIX=/opt/luajit && make install PREFIX=/opt/luajit \
 	&& ln -sf "$(ls /opt/luajit/bin/luajit-2.1.* | head -1)" /opt/luajit/bin/luajit
-ARG LUAROCKS_VERSION=3.11.1
-RUN curl -fsSL https://luarocks.org/releases/luarocks-${LUAROCKS_VERSION}.tar.gz | tar xz \
-	&& cd luarocks-${LUAROCKS_VERSION} \
-	&& ./configure --with-lua=/opt/luajit --with-lua-include=/opt/luajit/include/luajit-2.1 --lua-version=5.1 \
-	&& make && make install
-RUN for rock in luautf8 luafilesystem; do \
-		luarocks --tree=/opt/rocks --lua-version=5.1 install $rock; \
-	done
+# Native modules, compiled directly from pinned releases (same versions setup.sh
+# gets on macOS). luarocks can't be used here: running on this LuaJIT it fails to
+# load the luarocks.org manifest ("more than 65536 constants").
+ARG LUAUTF8_VERSION=0.3.0
+ARG LFS_TAG=v1_9_0
+ENV LUA_INC=/opt/luajit/include/luajit-2.1 ROCKS_LIB=/opt/rocks/lib/lua/5.1
+RUN mkdir -p ${ROCKS_LIB} \
+	&& curl -fsSL https://github.com/starwing/luautf8/archive/refs/tags/${LUAUTF8_VERSION}.tar.gz | tar xz \
+	&& gcc -O2 -fPIC -shared -I${LUA_INC} -o ${ROCKS_LIB}/lua-utf8.so luautf8-${LUAUTF8_VERSION}/lutf8lib.c \
+	&& curl -fsSL https://github.com/lunarmodules/luafilesystem/archive/refs/tags/${LFS_TAG}.tar.gz | tar xz \
+	&& gcc -O2 -fPIC -shared -I${LUA_INC} -o ${ROCKS_LIB}/lfs.so luafilesystem-*/src/lfs.c \
+	&& /opt/luajit/bin/luajit -e 'package.cpath="/opt/rocks/lib/lua/5.1/?.so"; require("lua-utf8"); require("lfs"); print("native modules OK")'
 
 # --- python deps ---
 FROM python:3.13-slim-bookworm AS pydeps
@@ -40,7 +44,6 @@ WORKDIR /pob
 # Only what the headless engine and API need (see app/Dockerfile.dockerignore).
 COPY --chown=pob runtime/lua runtime/lua
 COPY --chown=pob src src
-COPY --chown=pob spec/TestBuilds spec/TestBuilds
 COPY --chown=pob app/engine app/engine
 COPY --chown=pob app/api app/api
 

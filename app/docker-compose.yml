@@ -1,0 +1,21 @@
+# Run from the repo root:
+#   docker compose -f app/docker-compose.yml up --build
+# API: http://localhost:8000/docs
+name: pob-poe2
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: app/Dockerfile
+      args:
+        INSTALL_DEV: "true"   # include pytest so the image can test itself
+    image: pob-poe2-api:dev
+    ports:
+      - "8000:8000"
+    environment:
+      POB_MAX_WORKERS: "4"
+      CORS_ORIGINS: "http://localhost:5173"
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
