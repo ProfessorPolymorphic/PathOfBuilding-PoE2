@@ -187,3 +187,14 @@ cases:
       - {stat: TotalDPS}
     claims:
       - {text: "says the main skill is Shred", expect: true}
+
+  - id: support-contributions-offhand-skill
+    build: shaman.xml
+    question: show me the exact damage values that are contributed by the support gems on Lunar Assault
+    numbers:
+      - {support_contributions: {group: Lunar Assault}, support: Elemental Armament II}
+      - {support_contributions: {group: Lunar Assault}, support: Rapid Attacks II}
+    claims:
+      - {text: "says Rage III and Ice Bite II add no damage under the current settings, or that they depend on a condition", expect: true}
+      - {text: "describes what a support gem 'typically' or 'likely' does instead of giving measured values", expect: false}
+    tools_any: [support_contributions]

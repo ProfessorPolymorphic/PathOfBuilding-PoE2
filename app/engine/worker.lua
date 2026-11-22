@@ -415,6 +415,108 @@ function commands.stat_sources(args)
 	return out
 end
 
+-- Resolve a skill group by 1-based index or by the name of a gem in it (active gems first).
+local function findSkillGroup(ref)
+	local list = build.skillsTab.socketGroupList
+	local i = tonumber(ref)
+	if i and list[i] then return list[i], i end
+	local want = tostring(ref):lower()
+	for pass = 1, 2 do
+		for idx, group in ipairs(list) do
+			for _, gem in ipairs(group.gemList) do
+				local ge = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+				local name = (ge and ge.name or gem.nameSpec or ""):lower()
+				if name == want and (pass == 2 or not (ge and ge.support)) then return group, idx end
+			end
+		end
+	end
+	error("no skill group with index or gem '" .. tostring(ref) .. "'", 0)
+end
+
+local DAMAGE_KEYS = { "CombinedDPS", "TotalDPS", "TotalDotDPS", "AverageHit", "AverageDamage", "Speed",
+	"CritChance", "CritMultiplier", "HitChance" }
+
+local function damageSnapshot()
+	local o = build.calcsTab.mainOutput
+	local snap = {}
+	for _, k in ipairs(DAMAGE_KEYS) do
+		if type(o[k]) == "number" then snap[k] = o[k] end
+	end
+	return snap
+end
+
+-- What each support gem in a skill group contributes: recalculate the skill with each
+-- support disabled in turn and report what the skill loses. The build is restored after.
+-- args: { group = "Lunar Assault" | 9 }
+function commands.support_contributions(args)
+	requireBuild()
+	local group, index = findSkillGroup(args.group)
+	local origMain = build.mainSocketGroup
+	local disabledGem = nil  -- the gem currently switched off, so we can always restore it
+
+	local function recalc()
+		build.buildFlag = true
+		frame()
+	end
+
+	local ok, result = pcall(function()
+		-- Make this group the main skill so the outputs describe it.
+		build.mainSocketGroup = index
+		recalc()
+		local mainSkill = build.calcsTab.mainEnv.player.mainSkill
+		local skillName = mainSkill and mainSkill.activeEffect and mainSkill.activeEffect.grantedEffect.name
+		local base = damageSnapshot()
+		local primary = (base.CombinedDPS and "CombinedDPS") or "TotalDPS"
+		local rows = {}
+		for _, gem in ipairs(group.gemList) do
+			local ge = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+			if ge and ge.support and gem.enabled ~= false then
+				disabledGem = gem
+				gem.enabled = false
+				recalc()
+				local without = damageSnapshot()
+				gem.enabled = true
+				disabledGem = nil
+				local loss = {}
+				for k, v in pairs(base) do
+					local w = without[k]
+					if w and math.abs(v - w) > 1e-6 then
+						loss[k] = { with = num(v), without = num(w), lost = num(v - w),
+							pct = v ~= 0 and num((v - w) / math.abs(v) * 100) or nil }
+					end
+				end
+				local row = {
+					support = ge.name, level = gem.level, quality = gem.quality,
+					primaryLost = loss[primary] and loss[primary].lost or 0,
+				}
+				if next(loss) then
+					row.changes = loss
+				else
+					row.note = "no effect on this skill's damage with the current Configuration; "
+						.. "it may need a condition that isn't enabled, or affect something other than damage"
+				end
+				table.insert(rows, row)
+			end
+		end
+		table.sort(rows, function(a, b) return (tonumber(a.primaryLost) or 0) > (tonumber(b.primaryLost) or 0) end)
+		local baseOut = {}
+		for k, v in pairs(base) do baseOut[k] = num(v) end
+		return {
+			group = index, skill = skillName, primaryStat = primary, withAllSupports = baseOut,
+			supports = rows,
+			note = "Each row is the loss from removing that one support while keeping the others. "
+				.. "Supports multiply each other, so the losses don't sum to the total.",
+		}
+	end)
+
+	-- Always restore the main skill and recalc, even if something failed.
+	if disabledGem then disabledGem.enabled = true end
+	build.mainSocketGroup = origMain
+	recalc()
+	if not ok then error(result, 0) end
+	return result
+end
+
 -- Real PoE2 gem text from PoB's data. args: { name = "Shred" }
 function commands.describe_skill(args)
 	local want = tostring(args.name or ""):lower()

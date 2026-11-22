@@ -74,6 +74,33 @@ def contains_number(text: str, value: float, tol: float = 0.015) -> bool:
     return any(abs(n - value) <= slack or abs(abs(n) - abs(value)) <= slack for n in nums)
 
 
+def ungrounded_numbers(answer: str, sources: list[str]) -> list[str]:
+    """Numbers in the answer that don't appear (within rounding) in anything the model was
+    given: the question, the build snapshot, or tool results. Small integers (< 10) are
+    ignored since they're usually list positions, counts or levels."""
+    pool: list[float] = []
+    for text in sources:
+        pool.extend(numbers_in(text))
+    known = set()
+    for v in pool:
+        known.update({v, v * 100, v / 100, -v})
+    def grounded(n: float) -> bool:
+        tol = max(abs(n) * 0.012, 0.06)
+        return any(abs(n - k) <= tol for k in known)
+    bad = []
+    for m in NUMBER_RE.finditer(answer):
+        token = m.group(0).strip()
+        vals = numbers_in(token)
+        if not vals:
+            continue
+        n = vals[0]
+        if abs(n) < 10 and float(n).is_integer():
+            continue
+        if not grounded(n):
+            bad.append(token)
+    return bad
+
+
 @dataclass
 class CheckResult:
     kind: str
@@ -118,6 +145,13 @@ async def resolve_number(spec: dict, call) -> tuple[float, str]:
             raise ValueError(f"{stat} doesn't change for that item")
         field_ = spec.get("field", "delta")
         return float(ch[field_]), f"{stat} {field_} with the candidate item"
+    if "support_contributions" in spec:
+        r = await call("support_contributions", **spec["support_contributions"])
+        row = next((x for x in r["supports"] if x["support"] == spec["support"]), None)
+        change = row and (row.get("changes") or {}).get(r["primaryStat"])
+        if not change:
+            raise ValueError(f"{spec['support']} has no damage contribution in {spec['support_contributions']}")
+        return float(change[spec.get("field", "lost")]), f"{r['primaryStat']} lost without {spec['support']}"
     stat = spec["stat"]
     r = await call("stats", keys=[stat])
     v = r[stat]
@@ -165,7 +199,12 @@ async def run_case(case: dict, global_claims: list[dict], worker: EngineWorker, 
                    model: str | None) -> CaseResult:
     res = CaseResult(id=case["id"], question=case["question"].strip())
     xml = (FIXTURES / case.get("build", "shaman.xml")).read_text()
-    await worker.call("load_xml", xml=xml, name=case["id"])
+    try:
+        await worker.call("load_xml", xml=xml, name=case["id"])
+    except Exception as e:  # a stuck/crashed worker shouldn't end the whole run
+        await worker.close()  # the next call starts a fresh worker
+        res.error = f"engine failed to load the build: {e!r}"
+        return res
 
     # Expectations come from the engine *before* the agent can change anything.
     try:
@@ -188,6 +227,12 @@ async def run_case(case: dict, global_claims: list[dict], worker: EngineWorker, 
     res.seconds = round(time.monotonic() - t0, 1)
     res.tokens = agent.tokens_used
     res.tools = [{"name": e.name, "args": e.args, "ok": e.ok} for e in events]
+
+    # Every number stated should come from something the model actually saw.
+    sources = [m.get("content") or "" for m in agent.messages if m.get("role") in ("system", "tool", "user")]
+    bad = ungrounded_numbers(res.answer, sources)
+    res.checks.append(CheckResult("grounding", "every number comes from the snapshot or a tool result",
+                                  not bad, "" if not bad else f"unsupported: {', '.join(bad[:8])}"))
 
     for value, desc in expected_numbers:
         ok = contains_number(res.answer, value)
@@ -230,11 +275,14 @@ async def main() -> None:
     ap.add_argument("--cases", default=str(HERE / "cases.yaml"))
     ap.add_argument("--agent-dir", help="directory holding an alternative agent.py (A/B testing)")
     ap.add_argument("--label", default="", help="added to the report file name")
+    ap.add_argument("--repeat", type=int, default=1, help="run each case N times (models vary run to run)")
     args = ap.parse_args()
     settings.require_llm()
 
     spec = yaml.safe_load(Path(args.cases).read_text())
-    cases = [c for c in spec["cases"] if not args.only or args.only in c["id"]]
+    only = args.only.split(",") if args.only else None
+    cases = [c for c in spec["cases"] if not only or any(o in c["id"] for o in only)]
+    cases = [c for c in cases for _ in range(args.repeat)]
     global_claims = spec.get("global_claims", [])
     model = args.model or settings.LLM_MODEL
     print(f"Running {len(cases)} case(s) with {model}; judge: {JUDGE_MODEL}")

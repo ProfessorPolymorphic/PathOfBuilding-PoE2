@@ -51,6 +51,11 @@ the conversation; use tools for anything else.
 - Before recommending a change (passives, items, config), test it with a compare_* tool and give
   before -> after numbers. Gains don't add up: test combinations in one compare_passives call.
 - For "best nodes" questions use rank_passives (one call ranks every candidate).
+- For "what do my supports/gems contribute?" use support_contributions, then describe_skill
+  for any support you explain. If a support shows no effect, check which Configuration
+  condition it needs (describe_skill + list_config) instead of guessing.
+- If no tool can answer part of a question, say exactly what can't be measured. Never fill
+  the gap with what a gem or mechanic "typically" or "likely" does.
 - Configuration matters: the snapshot lists active settings (e.g. resistance penalty, enemy type,
   conditions). When they explain a number, say so. compare_* tools don't change the build;
   set_config and set_main_skill do. If you change config to test something, restore it
@@ -105,6 +110,15 @@ TOOLS = [
         "value and source (item, passive, skill, base/penalty, config). Answers 'where does my X "
         "come from?'. Resistances are fed by both e.g. ColdResist and ElementalResist.",
         {"mods": {"type": "array", "items": {"type": "string"}}}, ["mods"]),
+    _fn("support_contributions",
+        "Exact damage each support gem contributes to a skill: the engine recalculates the "
+        "skill with each support removed in turn and reports what it loses (DPS, average hit, "
+        "speed, crit...). Works for any skill group, not just the main skill; the build is "
+        "unchanged afterwards. Supports showing no effect usually depend on a Configuration "
+        "condition that isn't enabled.",
+        {"group": {"type": ["string", "integer"],
+                   "description": "Skill name (e.g. 'Lunar Assault') or 1-based group index"}},
+        ["group"]),
     _fn("describe_skill",
         "The real PoE2 description and tags of a skill or support gem from PoB's game data.",
         {"name": {"type": "string"}}, ["name"]),
@@ -171,6 +185,8 @@ def _engine_request(name: str, args: dict) -> tuple[str, dict]:
         return "explain_stat", {"stat": args.get("stat")}
     if name == "stat_sources":
         return "stat_sources", {"mods": args.get("mods") or []}
+    if name == "support_contributions":
+        return "support_contributions", {"group": args.get("group")}
     if name == "describe_skill":
         return "describe_skill", {"name": args.get("name")}
     if name == "get_item_details":
@@ -228,9 +244,10 @@ class Agent:
     tokens_used: int = 0
 
     preload_context: bool = True
+    require_first_tool: bool = True
 
     def reset(self) -> None:
-        self.messages = self.messages[:1]
+        self.messages = [{"role": "system", "content": SYSTEM_PROMPT}]
 
     async def _build_context(self) -> str:
         """Snapshot of the build and active config, given to the model up front so it always
@@ -282,27 +299,37 @@ class Agent:
         If anything fails mid-way, the conversation is rolled back to before the
         question, so a half-finished tool exchange can't poison later requests.
         """
-        checkpoint = len(self.messages)
+        checkpoint = list(self.messages)
         try:
             return await self._ask(question)
         except BaseException:
-            del self.messages[checkpoint:]
+            self.messages = checkpoint
             raise
 
     async def _ask(self, question: str) -> str:
         if self.preload_context and len(self.messages) == 1:
-            self.messages.append({"role": "system", "content": await self._build_context()})
+            # Merge into the one system message: some chat templates (Kimi's included, as
+            # served here) mishandle a second system message and drop the instructions.
+            self.messages[0] = {"role": "system",
+                                "content": SYSTEM_PROMPT + "\n\n" + await self._build_context()}
         self.messages.append({"role": "user", "content": question})
         for round_no in range(MAX_TOOL_ROUNDS + 1):
             final_round = round_no == MAX_TOOL_ROUNDS
             if self.on_round:
                 self.on_round(round_no + 1)
+            # First round: the model must look something up before answering (answers given
+            # without any tool call were often invented). Last round: force a written answer.
+            if final_round:
+                tool_choice = "none"
+            elif round_no == 0 and self.require_first_tool:
+                tool_choice = "required"
+            else:
+                tool_choice = "auto"
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=self.messages,
                 tools=TOOLS,
-                # On the last round, force a written answer from what we have.
-                tool_choice="none" if final_round else "auto",
+                tool_choice=tool_choice,
                 max_tokens=4096,
             )
             if response.usage:

@@ -91,4 +91,4 @@ def test_tool_round_limit(monkeypatch):
     client.chat.completions.create = spy
     a = Agent(engine_call=engine_call, model="fake", client=client)
     assert asyncio.run(a.ask("x")) == "done"
-    assert seen_choice == ["auto", "none"]
+    assert seen_choice == ["required", "none"]
