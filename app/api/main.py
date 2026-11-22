@@ -236,6 +236,22 @@ async def search_nodes(
     return await sessions.call(sessions.get(build_id), "search_nodes", **args)
 
 
+class RankNodes(BaseModel):
+    stat: str = "TotalDPS"
+    query: str = ""
+    types: list[str] | None = None
+    max_cost: int = Field(5, ge=1, le=15)
+    candidates: list[str | int] | None = None
+    limit: int = Field(10, ge=1, le=100)
+    also: list[str] | None = None
+
+
+@app.post("/builds/{build_id}/nodes/rank")
+async def rank_nodes(build_id: str, body: RankNodes):
+    args = {k: v for k, v in body.model_dump().items() if v not in (None, "", [])}
+    return await sessions.call(sessions.get(build_id), "rank_nodes", **args)
+
+
 @app.post("/builds/{build_id}/nodes/compare")
 async def compare_nodes(build_id: str, body: NodeChange):
     return await sessions.call(sessions.get(build_id), "compare_nodes", add=body.add, remove=body.remove)
@@ -247,6 +263,11 @@ async def apply_nodes(build_id: str, body: NodeChange):
 
 
 # -- items --
+
+@app.get("/builds/{build_id}/items")
+async def item_details(build_id: str, slot: str | None = None):
+    return await sessions.call(sessions.get(build_id), "item_details", **({"slot": slot} if slot else {}))
+
 
 @app.post("/builds/{build_id}/items/compare")
 async def compare_item(build_id: str, body: ItemChange):

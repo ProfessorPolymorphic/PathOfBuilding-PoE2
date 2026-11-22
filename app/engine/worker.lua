@@ -312,11 +312,41 @@ function commands.stats(args)
 		local out = {}
 		for _, k in ipairs(args.keys) do
 			local v = build.calcsTab.mainOutput[k]
-			out[k] = type(v) == "table" and "<table>" or num(v)
+			-- Unknown keys come back as "n/a" rather than silently missing.
+			if v == nil then out[k] = "n/a" else out[k] = type(v) == "table" and "<table>" or num(v) end
 		end
 		return out
 	end
 	return currentStats()
+end
+
+-- Full text (mods included) of equipped items. args: { slot = "Helmet" } or {} for all.
+function commands.item_details(args)
+	requireBuild()
+	local out = {}
+	for _, slot in ipairs(build.itemsTab.orderedSlots) do
+		local item = build.itemsTab.items[slot.selItemId]
+		if item and not slot.nodeId and (not args.slot or args.slot == slot.slotName) then
+			local lines = {}
+			for line in cleanText(item:BuildRaw()):gmatch("[^\n]+") do
+				-- PoB tags mod lines like "{enchant}{rune}+18% ..."; keep the meaning, drop the syntax.
+				local tags = {}
+				line = line:gsub("{(%w+)}", function(t) table.insert(tags, t) return "" end)
+				if #tags > 0 then line = line .. " (" .. table.concat(tags, ", ") .. ")" end
+				-- Drop PoB bookkeeping lines that mean nothing to a reader.
+				if not line:match("^Unique ID:") and not line:match("^Item Level:")
+					and not line:match("^LevelReq:") and not line:match("^Implicits:") then
+					table.insert(lines, line)
+				end
+			end
+			table.insert(out, { slot = slot.slotName, name = item.name, text = table.concat(lines, "\n") })
+		end
+	end
+	if args.slot and #out == 0 then
+		requireSlot(args.slot)
+		return { items = {}, note = "slot is empty" }
+	end
+	return { items = out }
 end
 
 -- args: { index = n }  (1-based socket group index from summary.skills)
@@ -386,6 +416,65 @@ function commands.compare_nodes(args)
 		pointDelta = #added - #removed,
 		changes = diffOutputs(base, new),
 	}
+end
+
+-- Rank unallocated passives by how much each (with its path) improves one stat.
+-- Every candidate is evaluated independently against the current build.
+-- args: { stat = "TotalDPS", query = "", types = {"Notable"}, max_cost = 5,
+--         candidates = {names/ids} (overrides query/types), limit = 10,
+--         also = {"Life", "TotalEHP"} (extra stats to report deltas for) }
+function commands.rank_nodes(args)
+	requireBuild()
+	local stat = args.stat or "TotalDPS"
+	local maxCost = tonumber(args.max_cost) or 5
+	local also = args.also or { "Life", "EnergyShield", "TotalEHP" }
+	local calcFunc, base = build.calcsTab:GetMiscCalculator()
+	if type(base[stat]) ~= "number" then error("stat '" .. stat .. "' is not a numeric output", 0) end
+
+	local pool = {}
+	if args.candidates and #args.candidates > 0 then
+		for _, ref in ipairs(args.candidates) do table.insert(pool, findNode(ref)) end
+	else
+		local types = {}
+		for _, t in ipairs(args.types or { "Notable", "Keystone" }) do types[t] = true end
+		local q = (args.query or ""):lower()
+		for _, n in pairs(build.spec.nodes) do
+			if types[n.type] and n.dn then
+				local hay = n.dn:lower() .. "\n" .. table.concat(n.sd or {}, "\n"):lower()
+				if q == "" or hay:find(q, 1, true) then table.insert(pool, n) end
+			end
+		end
+	end
+
+	local results, evaluated, skipped = {}, 0, 0
+	for _, n in ipairs(pool) do
+		if n.alloc or not n.path or #n.path > maxCost or evaluated >= 300 then
+			skipped = skipped + 1
+		else
+			evaluated = evaluated + 1
+			local add = {}
+			for _, p in ipairs(n.path) do add[p] = true end
+			local out = calcFunc({ addNodes = add }, true)
+			local d = (out[stat] or 0) - base[stat]
+			local extra = {}
+			for _, k in ipairs(also) do
+				if type(base[k]) == "number" and type(out[k]) == "number" and math.abs(out[k] - base[k]) > 0.001 then
+					extra[k] = num(out[k] - base[k])
+				end
+			end
+			table.insert(results, {
+				name = n.dn, id = n.id, type = n.type, cost = #n.path,
+				delta = num(d), pct = base[stat] ~= 0 and num(d / math.abs(base[stat]) * 100) or nil,
+				perPoint = num(d / #n.path),
+				otherDeltas = next(extra) and extra or nil,
+				stats = n.sd,
+			})
+		end
+	end
+	table.sort(results, function(a, b) return (tonumber(a.delta) or 0) > (tonumber(b.delta) or 0) end)
+	local top = {}
+	for i = 1, math.min(#results, tonumber(args.limit) or 10) do top[i] = results[i] end
+	return { stat = stat, baseline = num(base[stat]), evaluated = evaluated, skipped = skipped, results = top }
 end
 
 -- Search the passive tree by name or stat text.

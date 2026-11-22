@@ -138,3 +138,24 @@ def test_worker_crash_recovery(client, build):
             break
     assert r.status_code == 200
     assert next(i["name"] for i in r.json()["items"] if i["slot"] == "Helmet") == "Doom Crown, Hallowed Crown"
+
+
+def test_rank_nodes_matches_compare(client, build):
+    bid = build["build_id"]
+    r = client.post(f"/builds/{bid}/nodes/rank", json={"stat": "TotalDPS", "max_cost": 4, "limit": 3}).json()
+    assert r["evaluated"] > 0 and len(r["results"]) == 3
+    deltas = [x["delta"] for x in r["results"]]
+    assert deltas == sorted(deltas, reverse=True)
+    # The ranked gain for the top node must equal a direct what-if of that node.
+    top = r["results"][0]
+    cmp = client.post(f"/builds/{bid}/nodes/compare", json={"add": [top["name"]]}).json()
+    dps = next(c for c in cmp["changes"]["player"] if c["stat"] == "TotalDPS")
+    assert dps["delta"] == pytest.approx(top["delta"])
+    assert cmp["pointDelta"] == top["cost"]
+
+
+def test_item_details(client, build):
+    r = client.get(f"/builds/{build['build_id']}/items", params={"slot": "Helmet"}).json()
+    text = r["items"][0]["text"]
+    assert "Victory Corona" in text and "+35% to Lightning Resistance" in text
+    assert "{" not in text  # PoB's internal mod tags are cleaned up
