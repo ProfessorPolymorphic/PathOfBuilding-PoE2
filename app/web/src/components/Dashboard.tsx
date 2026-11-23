@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { api, ApiError, type BuildSummary, type Card, type Dashboard as DashboardData, type NodeCandidate } from '../api'
 import { BuildDetails } from './BuildDetails'
 import { ChangeCard } from './ChangeCard'
-import { HitDistribution } from './HitDistribution'
 import { StatPanel } from './StatPanel'
 
 // What pasting a build code fills in: the build's core stats, then the best reachable
@@ -99,8 +98,6 @@ export function Dashboard({ buildId, build, onBuildLost }: Props) {
           </div>
         )}
       </section>
-
-      <HitDistribution buildId={buildId} build={build} />
     </div>
   )
 }

@@ -722,11 +722,11 @@ function commands.hit_distribution(args)
 		if out.MainHand or out.OffHand then
 			-- A hand without an average hit doesn't attack with this skill.
 			for _, h in ipairs({ { "Main Hand", out.MainHand }, { "Off Hand", out.OffHand } }) do
-				if h[2] and type(h[2].AverageHit) == "number" then
+				if h[2] and type(h[2].AverageHit) == "number" and h[2].AverageHit > 0 then
 					table.insert(hands, { hand = h[1], model = rollModel(h[2]) })
 				end
 			end
-		else
+		elseif type(out.AverageHit) == "number" and out.AverageHit > 0 then
 			table.insert(hands, { hand = "Skill", model = rollModel(out) })
 		end
 		local applied = {}

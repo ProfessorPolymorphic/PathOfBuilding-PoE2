@@ -357,3 +357,8 @@ def test_hit_distribution_rejects_unknown_config(client, build):
     r = client.post(f"/builds/{build['build_id']}/distribution",
                     json={"skill": "Shred", "scenarios": [{"name": "x", "config": {"notAVar": True}}]})
     assert r.status_code == 422 and "notAVar" in r.json()["detail"]
+
+
+def test_hit_distribution_of_a_skill_without_hits_is_422(client, build):
+    r = client.post(f"/builds/{build['build_id']}/distribution", json={"skill": "Purity of Fire", "samples": 100})
+    assert r.status_code == 422 and "doesn't deal hit damage" in r.json()["detail"]

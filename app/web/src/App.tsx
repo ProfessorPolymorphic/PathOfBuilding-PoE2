@@ -3,6 +3,7 @@ import { api, ApiError, type BuildSummary } from './api'
 import { BuildLoader } from './components/BuildLoader'
 import { Chat, type ChatEntry } from './components/Chat'
 import { Dashboard } from './components/Dashboard'
+import { DistributionView } from './components/DistributionView'
 
 const BUILD_KEY = 'pob.buildId'
 const chatKey = (id: string) => `pob.chat.${id}`
@@ -25,7 +26,32 @@ function save(key: string, value: unknown) {
   }
 }
 
+const TABS = [
+  { id: 'dashboard', label: 'Dashboard' },
+  { id: 'distribution', label: 'Damage distribution' },
+] as const
+type Tab = (typeof TABS)[number]['id']
+
+// The open tab lives in the URL hash, so reloading or bookmarking keeps it.
+function tabFromHash(): Tab {
+  const id = window.location.hash.slice(1)
+  return TABS.some((t) => t.id === id) ? (id as Tab) : 'dashboard'
+}
+
 export default function App() {
+  const [tab, setTabState] = useState<Tab>(tabFromHash)
+  // Tabs stay mounted once opened, so switching back doesn't redo their work.
+  const [opened, setOpened] = useState<Set<Tab>>(() => new Set([tabFromHash()]))
+  const setTab = useCallback((t: Tab) => {
+    setTabState(t)
+    setOpened((prev) => (prev.has(t) ? prev : new Set(prev).add(t)))
+    if (window.location.hash !== `#${t}`) history.replaceState(null, '', `#${t}`)
+  }, [])
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [setTab])
   const [buildId, setBuildId] = useState<string | null>(() => load<string | null>(BUILD_KEY, null))
   const [build, setBuild] = useState<BuildSummary | null>(null)
   const [entries, setEntriesState] = useState<ChatEntry[]>([])
@@ -122,8 +148,37 @@ export default function App() {
       )}
 
       {build && !showLoader && buildId && (
+        <nav className="tabs" role="tablist" aria-label="Views">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              role="tab"
+              id={`tab-${t.id}`}
+              aria-selected={tab === t.id}
+              aria-controls={`panel-${t.id}`}
+              className={tab === t.id ? 'tab on' : 'tab'}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {build && !showLoader && buildId && (
         <main className="workspace">
-          <Dashboard buildId={buildId} build={build} onBuildLost={buildLost} />
+          <div className="tab-panels">
+            {opened.has('dashboard') && (
+              <div role="tabpanel" id="panel-dashboard" aria-labelledby="tab-dashboard" hidden={tab !== 'dashboard'}>
+                <Dashboard buildId={buildId} build={build} onBuildLost={buildLost} />
+              </div>
+            )}
+            {opened.has('distribution') && (
+              <div role="tabpanel" id="panel-distribution" aria-labelledby="tab-distribution" hidden={tab !== 'distribution'}>
+                <DistributionView key={buildId} buildId={buildId} build={build} />
+              </div>
+            )}
+          </div>
           <Chat
             buildId={buildId}
             entries={entries}

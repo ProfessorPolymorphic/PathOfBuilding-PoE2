@@ -82,7 +82,8 @@ POST /builds/{id}/distribution
 Scenario config overrides apply to that calculation only; the build isn't changed. Each
 scenario returns PoB's averages, the extracted model, a summary (quantiles, miss/crit share)
 and the samples as columns (damage, outcome, multiplier, hand, and damage by type unless
-`by_type` is false). The dashboard charts it; "Download the samples" saves the full data.
+`by_type` is false). The Damage distribution tab charts it (pick a skill, add scenarios from
+any on/off Configuration setting); "Download the samples" saves the full data.
 
 Inherits PoB's simplifications: armour reduction uses the average hit, and effects PoB
 averages as uptime (rather than as a chance per hit) stay averaged.
