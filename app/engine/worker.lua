@@ -688,6 +688,117 @@ end
 
 -- args: { group = "Shred" | 1, config = { conditionSurrounded = true, ... } }
 -- Config overrides apply only for this calculation; the build is restored afterwards.
+-- Roll models of every hand that hits with the main skill (a hand without an average hit
+-- doesn't attack with it).
+local function collectHands(out)
+	local hands = {}
+	if out.MainHand or out.OffHand then
+		for _, h in ipairs({ { "Main Hand", out.MainHand }, { "Off Hand", out.OffHand } }) do
+			if h[2] and type(h[2].AverageHit) == "number" and h[2].AverageHit > 0 then
+				table.insert(hands, { hand = h[1], model = rollModel(h[2]) })
+			end
+		end
+	elseif type(out.AverageHit) == "number" and out.AverageHit > 0 then
+		table.insert(hands, { hand = "Skill", model = rollModel(out) })
+	end
+	return hands
+end
+
+-- Enemy defences a sweep can vary: numeric config options PoB applies to the enemy.
+local SWEEP_VARS = {
+	enemyArmour = true, enemyEvasion = true, enemyPhysicalReduction = true,
+	enemyFireResist = true, enemyColdResist = true, enemyLightningResist = true, enemyChaosResist = true,
+	enemyBlockChance = true, enemyLevel = true,
+}
+
+-- The skill's roll model at each value of one enemy defence, holding everything else as
+-- configured. args: { group, var = "enemyArmour", values = { 0, 1000, ... } }
+-- Restores the config afterwards; `current` is the value the build uses now (typed in, or
+-- PoB's default for the enemy level).
+-- The value an enemy defence has now: typed into the config, or PoB's default. No recalc.
+function commands.sweep_current(args)
+	requireBuild()
+	if not SWEEP_VARS[args.var] then error("can't sweep '" .. tostring(args.var) .. "'", 0) end
+	local configTab = build.configTab
+	local placeholder = configTab.configSets[configTab.activeConfigSetId].placeholder or {}
+	return { var = args.var, current = num(configTab.input[args.var]) or num(placeholder[args.var]) }
+end
+
+function commands.hit_sweep(args)
+	requireBuild()
+	local var = args.var
+	if not SWEEP_VARS[var] then error("can't sweep '" .. tostring(var) .. "'", 0) end
+	local values = args.values or {}
+	if #values == 0 or #values > 60 then error("values: 1 to 60 numbers", 0) end
+	local group, index = findSkillGroup(args.group or build.mainSocketGroup)
+	local configTab = build.configTab
+	local input = configTab.input
+	local placeholder = configTab.configSets[configTab.activeConfigSetId].placeholder or {}
+	local origMain, origValue = build.mainSocketGroup, input[var]
+	local current = num(origValue) or num(placeholder[var])
+	local function recalc()
+		configTab:BuildModList()
+		build.buildFlag = true
+		frame()
+	end
+
+	local option
+	for _, opt in ipairs(require("Modules.ConfigOptions")) do
+		if opt.var == var then option = opt break end
+	end
+	local calcs = build.calcsTab.calcs
+
+	local ok, result = pcall(function()
+		build.mainSocketGroup = index
+		local steps, skill = {}, nil
+		-- Like PoB's misc calculator (its tooltips): build the player and enemy once with this
+		-- defence at zero, then per value add only the defence's own mods and calculate.
+		-- Enemy level changes the base environment itself, so it takes the full path.
+		local fast = var ~= "enemyLevel"
+		local cachedPlayerDB, cachedEnemyDB, cachedMinionDB
+		if fast then
+			input[var] = 0
+			configTab:BuildModList()
+			wipeGlobalCache()
+			local _
+			_, cachedPlayerDB, cachedEnemyDB, cachedMinionDB = calcs.initEnv(build, "CALCULATOR")
+		end
+		for _, v in ipairs(values) do
+			local env
+			if fast then
+				env = calcs.initEnv(build, "CALCULATOR", {}, {
+					cachedPlayerDB = cachedPlayerDB, cachedEnemyDB = cachedEnemyDB, cachedMinionDB = cachedMinionDB })
+				local modList, enemyModList = new("ModList"), new("ModList")
+				option.apply(tonumber(v), modList, enemyModList, build)
+				env.modDB:AddList(modList)
+				env.enemyDB:AddList(enemyModList)
+				calcs.perform(env)
+			else
+				input[var] = tonumber(v)
+				configTab:BuildModList()
+				wipeGlobalCache()
+				env = calcs.buildOutput(build, "MAIN")
+			end
+			local out = env.player.output
+			local ms = env.player.mainSkill
+			skill = skill or (ms and ms.activeEffect and ms.activeEffect.grantedEffect.name)
+			table.insert(steps, {
+				value = tonumber(v),
+				hands = collectHands(out),
+				pob = { averageHit = num(out.AverageHit), averageDamage = num(out.AverageDamage),
+					totalDPS = num(out.TotalDPS), speed = num(out.Speed) },
+			})
+		end
+		return { group = index, skill = skill, var = var, current = current, steps = steps }
+	end)
+
+	input[var] = origValue
+	build.mainSocketGroup = origMain
+	recalc()
+	if not ok then error(result, 0) end
+	return result
+end
+
 function commands.hit_distribution(args)
 	requireBuild()
 	local group, index = findSkillGroup(args.group or build.mainSocketGroup)
@@ -718,17 +829,7 @@ function commands.hit_distribution(args)
 		recalc()
 		local out = build.calcsTab.mainOutput
 		local ms = build.calcsTab.mainEnv.player.mainSkill
-		local hands = {}
-		if out.MainHand or out.OffHand then
-			-- A hand without an average hit doesn't attack with this skill.
-			for _, h in ipairs({ { "Main Hand", out.MainHand }, { "Off Hand", out.OffHand } }) do
-				if h[2] and type(h[2].AverageHit) == "number" and h[2].AverageHit > 0 then
-					table.insert(hands, { hand = h[1], model = rollModel(h[2]) })
-				end
-			end
-		elseif type(out.AverageHit) == "number" and out.AverageHit > 0 then
-			table.insert(hands, { hand = "Skill", model = rollModel(out) })
-		end
+		local hands = collectHands(out)
 		local applied = {}
 		for var in pairs(overrides) do applied[var] = num(input[var]) end
 		return {

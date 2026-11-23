@@ -88,6 +88,25 @@ any on/off Configuration setting); "Download the samples" saves the full data.
 Inherits PoB's simplifications: armour reduction uses the average hit, and effects PoB
 averages as uptime (rather than as a chance per hit) stay averaged.
 
+### Against enemy defences
+
+`hit_sweep` in `engine/worker.lua` recalculates a skill at each value of one enemy defence
+(armour, evasion, a resistance, physical damage reduction, block, enemy level), everything
+else as configured. Like PoB's tooltip calculator it builds the player and enemy once and adds
+only the defence per value, so a 25-value sweep takes well under a second; each value equals a
+full recalculation (tested). Enemy level changes the base setup, so it takes the full path.
+
+```
+GET  /defences                    what can be swept, with labels and default ranges
+POST /builds/{id}/sweep
+  {"skill": "Shred", "defence": "enemyArmour", "lo": 0, "hi": 30000, "steps": 25}
+```
+
+Each row is sampled and binned on one shared damage axis (share of attempts per bin, misses
+counted apart); the build's current value is always one of the rows. The Against enemy
+defences tab draws it as a density map: damage across, the defence up, with the distribution
+at your config on top and the average per attack on the right.
+
 ## Snapshots (build history)
 
 Every build loaded through `POST /builds` is also saved as a snapshot: the XML as pasted,
@@ -139,7 +158,7 @@ app/engine/test.sh                      # upstream PoB busted suite (~60s)
 
 ## Engine notes
 
-- **Worker protocol** (`engine/worker.lua`): one JSON request per line on stdin, one response per line on stdout. PoB logs go to stderr. Commands: `load_xml`, `summary`, `stats`, `export_xml`, `item_details`, `search_nodes`, `rank_nodes`, `compare_nodes`, `apply_nodes`, `compare_item`, `equip_item`, `list_config`, `set_config`, `set_main_skill`, `benchmark`.
+- **Worker protocol** (`engine/worker.lua`): one JSON request per line on stdin, one response per line on stdout. PoB logs go to stderr. Commands: `load_xml`, `summary`, `stats`, `export_xml`, `item_details`, `search_nodes`, `rank_nodes`, `compare_nodes`, `apply_nodes`, `compare_item`, `equip_item`, `list_config`, `set_config`, `set_main_skill`, `hit_distribution`, `hit_sweep`, `sweep_current`, `benchmark`.
 - `compare_*` commands are what-ifs computed with PoB's own misc calculator (the one behind its tooltips); they don't modify the build. `apply_*`/`equip_*`/`set_*` do.
 - Share codes are decoded in Python (`api/buildcode.py`) because headless PoB stubs out `Inflate`/`Deflate`.
 - One worker holds one build, boots in ~1.3s, loads a build in ~1.3s, uses ~400 MB, and evaluates a single what-if in ~24 ms. The API caps running workers (`POB_MAX_WORKERS`, default 4) and parks the least recently used ones; a parked build reloads from its XML snapshot on next use. A crashed worker is restarted the same way.

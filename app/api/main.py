@@ -398,6 +398,47 @@ async def hit_distribution(build_id: str, body: DistributionRequest):
     return {"skill": result["skill"], "group": result["group"], "samples": body.samples, "scenarios": out}
 
 
+class SweepRequest(BaseModel):
+    skill: str | int = Field(..., description="Skill group index, or the name of its active gem")
+    defence: str = Field(..., description="Enemy defence config var, e.g. enemyArmour")
+    lo: float | None = Field(None, description="Lowest value (default: the defence's usual range)")
+    hi: float | None = None
+    steps: int = Field(25, ge=3, le=50)
+    samples: int = Field(5000, ge=200, le=50000, description="Sampled attacks per step")
+    bins: int = Field(160, ge=20, le=400)
+    seed: int = 1
+
+
+@app.get("/defences")
+async def list_defences():
+    """Enemy defences a sweep can vary, with labels and default ranges."""
+    return [{"var": k, **{**v, "range": list(v["range"])}} for k, v in distribution.DEFENCES.items()]
+
+
+@app.post("/builds/{build_id}/sweep")
+async def hit_sweep(build_id: str, body: SweepRequest):
+    """A skill's damage distribution at each value of one enemy defence (armour, evasion, a
+    resistance, ...), everything else as configured. Each step is PoB's own calculation at
+    that value, sampled and binned on one shared damage axis. The build isn't changed."""
+    meta = distribution.DEFENCES.get(body.defence)
+    if not meta:
+        raise HTTPException(422, f"can't sweep {body.defence}; see GET /defences")
+    session = sessions.get(build_id)
+    current = (await sessions.call(session, "sweep_current", var=body.defence))["current"]
+    lo = meta["range"][0] if body.lo is None else body.lo
+    hi = meta["range"][1] if body.hi is None else body.hi
+    if hi <= lo:
+        raise HTTPException(422, "hi must be greater than lo")
+    values, grid_values = distribution.sweep_values(lo, hi, body.steps, current)
+    result = await sessions.call(session, "hit_sweep", group=body.skill, var=body.defence, values=values)
+    if not any(s["hands"] for s in result["steps"]):
+        raise HTTPException(422, f"{result.get('skill') or body.skill} doesn't deal hit damage")
+    grid = distribution.sweep_grid(result["steps"], body.samples, body.bins, body.seed, grid_values)
+    return {"skill": result["skill"], "group": result["group"], "defence": body.defence,
+            "label": meta["label"], "unit": meta["unit"], "affects": meta["affects"],
+            "current": current, "lo": lo, "hi": hi, "samples": body.samples, **grid}
+
+
 @app.put("/builds/{build_id}/main-skill")
 async def set_main_skill(build_id: str, body: MainSkill):
     return await sessions.call(sessions.get(build_id), "set_main_skill", index=body.index)

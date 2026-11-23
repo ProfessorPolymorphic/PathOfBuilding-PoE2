@@ -1,11 +1,14 @@
 import * as Plot from '@observablehq/plot'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   api, type BuildSummary, type ConfigOption, type Distribution, type DistScenario, type Outcome,
 } from '../api'
 import { DAMAGE_COLORS, DAMAGE_ORDER, DARK_INK, OUTCOME_COLORS, PALE_INK, inkOn } from '../colors'
 import { density } from '../density'
 import { formatNumber } from '../format'
+import { useWidth } from '../useWidth'
+import { mainSkill, useSkills } from '../skills'
+import { SkillPicker } from './SkillPicker'
 
 // The damage distribution tab. Left: what to look at (skill, scenarios). Right: how each
 // scenario compares, the distribution itself, and the rolls a hit is made of. Every number
@@ -52,15 +55,8 @@ interface Props {
 }
 
 export function DistributionView({ buildId, build }: Props) {
-  const skills = useMemo(() => {
-    const seen = new Set<string>()
-    return build.skills.filter((g) => {
-      if (!g.enabled || !g.activeSkill || seen.has(g.activeSkill)) return false
-      seen.add(g.activeSkill)
-      return true
-    })
-  }, [build])
-  const [skill, setSkill] = useState<string>(() => (skills.find((g) => g.isMain) ?? skills[0])?.activeSkill ?? '')
+  const skills = useSkills(build)
+  const [skill, setSkill] = useState<string>(() => mainSkill(skills))
   const [scenarios, setScenarios] = useState<ScenarioDef[]>([BASELINE])
   const [presetsAdded, setPresetsAdded] = useState(false)
   const [scale, setScale] = useState<'linear' | 'sqrt'>('linear')
@@ -139,22 +135,7 @@ export function DistributionView({ buildId, build }: Props) {
       <aside className="dist-rail panel" aria-label="What to show">
         <section>
           <h3>Skill</h3>
-          <ul className="skill-picker" role="radiogroup" aria-label="Skill">
-            {skills.map((g) => (
-              <li key={g.index}>
-                <label className={g.activeSkill === skill ? 'selected' : ''}>
-                  <input
-                    type="radio"
-                    name="dist-skill"
-                    checked={g.activeSkill === skill}
-                    onChange={() => { setSkill(g.activeSkill!); setFocus(0) }}
-                  />
-                  <span>{g.activeSkill}</span>
-                  {g.isMain && <span className="badge">main</span>}
-                </label>
-              </li>
-            ))}
-          </ul>
+          <SkillPicker skills={skills} value={skill} name="dist-skill" onChange={(v) => { setSkill(v); setFocus(0) }} />
         </section>
 
         <section>
@@ -318,22 +299,6 @@ function ScenarioTable({ data, focus, onFocus }: { data: Distribution; focus: nu
       </div>
     </section>
   )
-}
-
-// Width of a chart's container, kept current as it resizes or a hidden tab is shown.
-function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {
-  const ref = useRef<HTMLDivElement>(null)
-  const [width, setWidth] = useState(0)
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    const measure = () => setWidth(Math.round(el.clientWidth))
-    measure()
-    const ro = new ResizeObserver(measure)
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [])
-  return [ref, width]
 }
 
 function DistChart({ data, scale }: { data: Distribution; scale: 'linear' | 'sqrt' }) {

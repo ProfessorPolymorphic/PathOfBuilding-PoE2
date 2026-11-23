@@ -362,3 +362,37 @@ def test_hit_distribution_rejects_unknown_config(client, build):
 def test_hit_distribution_of_a_skill_without_hits_is_422(client, build):
     r = client.post(f"/builds/{build['build_id']}/distribution", json={"skill": "Purity of Fire", "samples": 100})
     assert r.status_code == 422 and "doesn't deal hit damage" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("defence", ["enemyArmour", "enemyEvasion", "enemyColdResist"])
+def test_sweep_matches_full_recalc(client, build, defence):
+    """Each sweep step (the fast, tooltip-style calculation) equals a full recalculation with
+    that config value, and the sweep leaves the build as it was."""
+    bid = build["build_id"]
+    before = client.get(f"/builds/{bid}/stats", params={"keys": ["TotalDPS"]}).json()
+    r = client.post(f"/builds/{bid}/sweep", json={"skill": "Shred", "defence": defence, "steps": 4, "samples": 500})
+    assert r.status_code == 200, r.text
+    data = r.json()
+    values = [s["value"] for s in data["steps"]]
+    assert values == sorted(values)
+    if data["current"] is not None:
+        assert round(data["current"]) in values  # the build's own setting is always a row
+    for step in (data["steps"][0], data["steps"][-1]):
+        full = client.post(f"/builds/{bid}/distribution", json={
+            "skill": "Shred", "samples": 100, "scenarios": [{"name": "x", "config": {defence: step["value"]}}]}).json()
+        assert step["pob"]["averageDamage"] == pytest.approx(full["scenarios"][0]["pob"]["averageDamage"], rel=1e-9)
+        s = step["summary"]
+        assert s["mean_per_attempt"] == pytest.approx(step["pob"]["averageDamage"], rel=1e-9)
+        # Bins hold every hit; with the misses they account for every attempt.
+        assert sum(step["hit"]) + sum(step["crit"]) + s["share"]["miss"] == pytest.approx(1)
+    # More defence, less damage.
+    assert data["steps"][-1]["pob"]["averageDamage"] < data["steps"][0]["pob"]["averageDamage"]
+    assert client.get(f"/builds/{bid}/stats", params={"keys": ["TotalDPS"]}).json() == before
+
+
+def test_sweep_rejects_unknown_defence_and_non_hits(client, build):
+    bid = build["build_id"]
+    assert client.post(f"/builds/{bid}/sweep", json={"skill": "Shred", "defence": "notAVar"}).status_code == 422
+    r = client.post(f"/builds/{bid}/sweep", json={"skill": "Purity of Fire", "defence": "enemyArmour", "steps": 3})
+    assert r.status_code == 422 and "doesn't deal hit damage" in r.json()["detail"]
+    assert {d["var"] for d in client.get("/defences").json()} >= {"enemyArmour", "enemyEvasion", "enemyFireResist"}

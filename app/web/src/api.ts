@@ -155,6 +155,39 @@ export interface Distribution {
   scenarios: DistScenario[]
 }
 
+export interface Defence {
+  var: string
+  label: string
+  unit: string
+  range: [number, number]
+  affects: string | null
+}
+
+export interface SweepStep {
+  value: number
+  on_grid: boolean
+  pob: { averageHit: number; averageDamage: number; totalDPS: number; speed: number }
+  summary: (DistScenario['summary'] & { hit_chance: number; crit_chance: number }) | null
+  hit: number[]   // share of attempts that were non-crit hits in each damage bin
+  crit: number[]  // ...and crits
+}
+
+export interface Sweep {
+  skill: string
+  group: number
+  defence: string
+  label: string
+  unit: string
+  affects: string | null
+  current: number | null
+  lo: number
+  hi: number
+  samples: number
+  bin_width: number
+  bins: number
+  steps: SweepStep[]
+}
+
 export interface ScenarioRequest {
   name: string
   config?: Record<string, boolean | number | string | null>
@@ -273,6 +306,9 @@ export const api = {
   dashboardDownloadUrl: (id: string) => `/builds/${id}/dashboard?download=true`,
   distribution: (id: string, body: { skill: string | number; scenarios: ScenarioRequest[]; samples?: number; by_type?: boolean }) =>
     request<Distribution>('POST', `/builds/${id}/distribution`, body),
+  defences: () => request<Defence[]>('GET', '/defences'),
+  sweep: (id: string, body: { skill: string; defence: string; lo?: number; hi?: number; steps?: number; samples?: number; bins?: number }) =>
+    request<Sweep>('POST', `/builds/${id}/sweep`, body),
   config: (id: string, query: string) =>
     request<{ options: ConfigOption[] }>('GET', `/builds/${id}/config?query=${encodeURIComponent(query)}`),
   chat: (id: string, message: string) => request<ChatReply>('POST', `/builds/${id}/chat`, { message }),

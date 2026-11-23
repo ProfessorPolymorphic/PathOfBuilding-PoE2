@@ -101,3 +101,62 @@ def summarize(samples: dict[str, list], hands: list[dict]) -> dict[str, Any]:
         "max": dmg[-1] if n else 0,
         "share": {k: v / n for k, v in counts.items()} if n else {},
     }
+
+
+# -- sweeps: the distribution across one enemy defence ------------------------------------
+
+# Enemy defences a sweep can vary (worker.lua SWEEP_VARS), with a default range.
+# `affects` is the damage type the defence acts on, or None when it acts on every hit.
+DEFENCES: dict[str, dict[str, Any]] = {
+    "enemyArmour": {"label": "Enemy armour", "unit": "", "range": (0, 30000), "affects": "Physical"},
+    "enemyEvasion": {"label": "Enemy evasion", "unit": "", "range": (0, 12000), "affects": None},
+    "enemyPhysicalReduction": {"label": "Enemy physical damage reduction", "unit": "%", "range": (0, 90), "affects": "Physical"},
+    "enemyFireResist": {"label": "Enemy fire resistance", "unit": "%", "range": (-60, 75), "affects": "Fire"},
+    "enemyColdResist": {"label": "Enemy cold resistance", "unit": "%", "range": (-60, 75), "affects": "Cold"},
+    "enemyLightningResist": {"label": "Enemy lightning resistance", "unit": "%", "range": (-60, 75), "affects": "Lightning"},
+    "enemyChaosResist": {"label": "Enemy chaos resistance", "unit": "%", "range": (-60, 75), "affects": "Chaos"},
+    "enemyBlockChance": {"label": "Enemy block chance", "unit": "%", "range": (0, 75), "affects": None},
+    "enemyLevel": {"label": "Enemy level", "unit": "", "range": (1, 85), "affects": None},
+}
+
+
+def sweep_values(lo: float, hi: float, steps: int, current: float | None) -> tuple[list[int], set[int]]:
+    """`steps` evenly spaced values from lo to hi (the grid), plus the current value so the
+    build's own setting is always one of the rows. Whole numbers: PoB's config takes integers."""
+    grid = {round(lo + (hi - lo) * i / (steps - 1)) for i in range(steps)}
+    vals = set(grid)
+    if current is not None and lo <= current <= hi:
+        vals.add(round(current))
+    return sorted(vals), grid
+
+
+def sweep_grid(steps: list[dict], n: int, bins: int, seed: int = 1, grid: set | None = None) -> dict[str, Any]:
+    """Sample every step and bin its hits on one shared damage axis.
+
+    Each step gets, per bin, the share of its attempts that were non-crit or crit hits in
+    that bin (misses are left out of the bins and reported as `miss`), so a step's bins plus
+    its miss share sum to 1. Steps without hits (the skill stops hitting) have empty bins.
+    `on_grid` is false for the extra row at the current value, which charts that need evenly
+    spaced rows leave out.
+    """
+    sampled = [sample(s["hands"], n, seed) if s["hands"] else None for s in steps]
+    top = max((max(x["damage"]) for x in sampled if x), default=0.0) or 1.0
+    width = top * 1.02 / bins
+    out = []
+    for s, x in zip(steps, sampled):
+        hit = [0.0] * bins
+        crit = [0.0] * bins
+        summary = None
+        if x:
+            for d, o in zip(x["damage"], x["outcome"]):
+                if o == "miss":
+                    continue
+                (crit if o == "crit" else hit)[min(bins - 1, int(d / width))] += 1 / n
+            summary = summarize(x, s["hands"])
+            m = s["hands"][0]["model"]
+            summary["hit_chance"] = m["hitChance"]
+            summary["crit_chance"] = m["critChance"]
+        out.append({"value": s["value"], "on_grid": grid is None or s["value"] in grid,
+                    "pob": s["pob"], "summary": summary,
+                    "hit": [round(v, 6) for v in hit], "crit": [round(v, 6) for v in crit]})
+    return {"bin_width": width, "bins": bins, "steps": out}

@@ -3,6 +3,7 @@ import { api, ApiError, type BuildSummary } from './api'
 import { BuildLoader } from './components/BuildLoader'
 import { Chat, type ChatEntry } from './components/Chat'
 import { Dashboard } from './components/Dashboard'
+import { DefenceView } from './components/DefenceView'
 import { DistributionView } from './components/DistributionView'
 
 const BUILD_KEY = 'pob.buildId'
@@ -29,6 +30,7 @@ function save(key: string, value: unknown) {
 const TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'distribution', label: 'Damage distribution' },
+  { id: 'defences', label: 'Against enemy defences' },
 ] as const
 type Tab = (typeof TABS)[number]['id']
 
@@ -176,6 +178,11 @@ export default function App() {
             {opened.has('distribution') && (
               <div role="tabpanel" id="panel-distribution" aria-labelledby="tab-distribution" hidden={tab !== 'distribution'}>
                 <DistributionView key={buildId} buildId={buildId} build={build} />
+              </div>
+            )}
+            {opened.has('defences') && (
+              <div role="tabpanel" id="panel-defences" aria-labelledby="tab-defences" hidden={tab !== 'defences'}>
+                <DefenceView key={buildId} buildId={buildId} build={build} />
               </div>
             )}
           </div>
