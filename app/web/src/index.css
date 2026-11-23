@@ -262,6 +262,23 @@ a { color: var(--accent); }
 .dash-details-body .panel { padding: 0; border: none; background: none; }
 .spinner.inline { display: inline-block; vertical-align: -0.1rem; margin-right: 0.35rem; }
 
+/* ---------- hit distribution ---------- */
+.dash-wide { grid-column: 1 / -1; }
+.dist-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1.1rem; font-size: 0.9rem; }
+.dist-controls select {
+  font: inherit; color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 0.25rem 0.5rem;
+}
+.dist-toggle { display: inline-flex; align-items: center; gap: 0.35rem; cursor: pointer; }
+.dist-toggle input { accent-color: var(--accent); }
+.dist-chart { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 0.75rem; min-height: 8rem; }
+.dist-chart svg { display: block; max-width: 100%; height: auto; overflow: visible; }
+.dist-chart [aria-label="tip"] { color: var(--accent-ink); }
+.dist-table table { border-collapse: collapse; font-size: 0.85rem; margin-top: 0.5rem; display: block; overflow-x: auto; }
+.dist-table th, .dist-table td { border-bottom: 1px solid var(--border); padding: 0.3rem 0.6rem; text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dist-table th:first-child, .dist-table tbody th { text-align: left; }
+.dist-table thead th { color: var(--muted); font-weight: 600; }
+
 /* ---------- change preview card ---------- */
 .change-card {
   background: var(--panel);

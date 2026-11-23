@@ -28,6 +28,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 import buildcode
+import distribution
 import settings
 import snapshots
 from agent import Agent, ToolEvent
@@ -355,6 +356,46 @@ async def dashboard(build_id: str, download: bool = False):
     name = re.sub(r"[^A-Za-z0-9]+", "-", f"{b.get('ascendancy') or b.get('class')}-{b.get('level')}").strip("-")
     return JSONResponse(data, headers={
         "Content-Disposition": f'attachment; filename="dashboard-{name.lower()}.json"'})
+
+
+class Scenario(BaseModel):
+    name: str = Field(..., min_length=1, max_length=60)
+    config: dict[str, bool | int | float | str | None] = Field(
+        default_factory=dict, description="Configuration overrides for this scenario only")
+
+
+class DistributionRequest(BaseModel):
+    skill: str | int = Field(..., description="Skill group index, or the name of its active gem")
+    scenarios: list[Scenario] = Field(
+        default_factory=lambda: [Scenario(name="As configured")], min_length=1, max_length=6)
+    samples: int = Field(20000, ge=100, le=200000)
+    seed: int = 1
+    by_type: bool = Field(True, description="Include each sample's damage split by type")
+
+
+@app.post("/builds/{build_id}/distribution")
+async def hit_distribution(build_id: str, body: DistributionRequest):
+    """Damage of one attack or cast as a distribution: every random draw PoB averages (hit,
+    crit, per-type damage rolls, lucky rolls, double/triple damage), sampled. Each scenario
+    applies its config overrides for this calculation only; the build isn't changed."""
+    session = sessions.get(build_id)
+    out = []
+    for sc in body.scenarios:
+        result = await sessions.call(session, "hit_distribution", group=body.skill, config=sc.config)
+        if not result["hands"]:
+            raise HTTPException(422, f"{result.get('skill') or body.skill} doesn't deal hit damage")
+        samples = distribution.sample(result["hands"], body.samples, body.seed)
+        if not body.by_type:
+            del samples["by_type"]
+        out.append({
+            "name": sc.name,
+            "config": sc.config,
+            "pob": result["pob"],
+            "hands": result["hands"],
+            "summary": distribution.summarize(samples, result["hands"]),
+            "samples": samples,
+        })
+    return {"skill": result["skill"], "group": result["group"], "samples": body.samples, "scenarios": out}
 
 
 @app.put("/builds/{build_id}/main-skill")

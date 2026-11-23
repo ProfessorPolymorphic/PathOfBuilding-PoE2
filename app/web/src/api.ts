@@ -109,6 +109,64 @@ export interface Dashboard {
   nodes: { max_cost: number; types: string[]; evaluated: number; candidates: NodeCandidate[] }
 }
 
+// Hit distribution (api/distribution.py): sampled attempts of one skill per scenario.
+export type Outcome = 'miss' | 'hit' | 'crit'
+
+export interface RollRange { min: number; max: number; lucky: number; mitigation: number }
+
+export interface HandModel {
+  hitChance: number
+  critChance: number
+  critMultiplier?: number
+  doubleDamageChance: number
+  tripleDamageChance: number
+  types: { type: string; hit?: RollRange; crit?: RollRange }[]
+  pob: { averageHit: number; averageDamage: number }
+}
+
+export interface DistScenario {
+  name: string
+  config: Record<string, unknown>
+  pob: { averageHit: number; averageDamage: number; totalDPS: number; speed: number }
+  hands: { hand: string; model: HandModel }[]
+  summary: {
+    n: number
+    mean_per_attempt: number
+    mean_per_hit: number
+    sample_mean: number
+    quantiles: Record<string, number>
+    min: number
+    max: number
+    share: Partial<Record<Outcome, number>>
+  }
+  samples: {
+    damage: number[]
+    outcome: Outcome[]
+    multiplier: number[]
+    hand: number[]
+    by_type?: Record<string, number[]>
+  }
+}
+
+export interface Distribution {
+  skill: string
+  group: number
+  samples: number
+  scenarios: DistScenario[]
+}
+
+export interface ScenarioRequest {
+  name: string
+  config?: Record<string, boolean | number | string | null>
+}
+
+export interface ConfigOption {
+  var: string
+  label: string
+  type: string
+  value?: unknown
+}
+
 export interface ToolCall {
   name: string
   args: Record<string, unknown>
@@ -213,6 +271,10 @@ export const api = {
   summary: (id: string) => request<BuildSummary>('GET', `/builds/${id}`),
   dashboard: (id: string) => request<Dashboard>('GET', `/builds/${id}/dashboard`),
   dashboardDownloadUrl: (id: string) => `/builds/${id}/dashboard?download=true`,
+  distribution: (id: string, body: { skill: string | number; scenarios: ScenarioRequest[]; samples?: number; by_type?: boolean }) =>
+    request<Distribution>('POST', `/builds/${id}/distribution`, body),
+  config: (id: string, query: string) =>
+    request<{ options: ConfigOption[] }>('GET', `/builds/${id}/config?query=${encodeURIComponent(query)}`),
   chat: (id: string, message: string) => request<ChatReply>('POST', `/builds/${id}/chat`, { message }),
   resetChat: (id: string) => request<void>('DELETE', `/builds/${id}/chat`),
 }

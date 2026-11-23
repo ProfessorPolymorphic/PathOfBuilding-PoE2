@@ -321,3 +321,39 @@ def test_deleted_build_is_gone_for_good(client):
 def test_unknown_or_malformed_ids_are_404(client):
     assert client.get("/builds/000000000000").status_code == 404
     assert client.get("/builds/..%2F..%2Fetc").status_code == 404
+
+
+def test_hit_distribution_matches_pob_averages(client, build):
+    """The sampled model's exact mean is PoB's own average, in every scenario."""
+    import distribution
+
+    bid = build["build_id"]
+    before = client.get(f"/builds/{bid}/stats", params={"keys": ["TotalDPS"]}).json()
+    r = client.post(f"/builds/{bid}/distribution", json={
+        "skill": "Lunar Assault", "samples": 5000,
+        "scenarios": [{"name": "Base"}, {"name": "No companion", "config": {"companionInPresence": False}}],
+    })
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["skill"] == "Lunar Assault"
+    base, alone = data["scenarios"]
+    for sc in (base, alone):
+        s = sc["summary"]
+        assert s["mean_per_attempt"] == pytest.approx(sc["pob"]["averageDamage"], rel=1e-9)
+        assert s["sample_mean"] == pytest.approx(s["mean_per_attempt"], rel=0.05)
+        assert len(sc["samples"]["damage"]) == 5000
+        assert set(sc["samples"]["outcome"]) <= {"miss", "hit", "crit"}
+        assert all(d == 0 for d, o in zip(sc["samples"]["damage"], sc["samples"]["outcome"]) if o == "miss")
+        for h in sc["hands"]:
+            assert distribution.model_mean(h["model"])["per_hit"] == pytest.approx(h["model"]["pob"]["averageHit"])
+    assert alone["pob"]["averageDamage"] < base["pob"]["averageDamage"]
+    # Scenarios never change the build itself.
+    assert client.get(f"/builds/{bid}/stats", params={"keys": ["TotalDPS"]}).json() == before
+    cfg = client.get(f"/builds/{bid}/config", params={"query": "companionInPresence"}).json()
+    assert cfg["options"][0]["value"] is True
+
+
+def test_hit_distribution_rejects_unknown_config(client, build):
+    r = client.post(f"/builds/{build['build_id']}/distribution",
+                    json={"skill": "Shred", "scenarios": [{"name": "x", "config": {"notAVar": True}}]})
+    assert r.status_code == 422 and "notAVar" in r.json()["detail"]

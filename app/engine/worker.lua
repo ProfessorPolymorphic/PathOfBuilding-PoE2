@@ -624,6 +624,130 @@ function commands.support_contributions(args)
 	return result
 end
 
+---------------------------------------------------------------------------
+-- Hit distributions: the random draws behind PoB's average hit.
+--
+-- PoB folds every roll into an average. This recovers the pieces it averaged, from the
+-- same calculation, so the API can sample whole hits:
+--   * hit or miss                          HitChance
+--   * crit or not (given a hit)            CritChance (PoB's effective chance)
+--   * per damage type, a uniform roll in [min, max] after every multiplier and the
+--     enemy's resistances/armour, separately for crits and non-crits
+--   * per damage type, a lucky roll (best of two) with chance `lucky`
+--   * double / triple damage               DoubleDamageChance, TripleDamageChance
+-- Means of the reconstructed model equal PoB's AverageHit and AverageDamage exactly.
+---------------------------------------------------------------------------
+
+local DAMAGE_TYPES = { "Physical", "Lightning", "Cold", "Fire", "Chaos" }
+
+-- Lucky chance that makes PoB's average of a [min, max] roll come out as `avg`:
+-- avg = mid + lucky * (max - min) / 6, since a lucky roll averages min/3 + 2max/3.
+local function luckyChance(min, max, avg)
+	if max - min < 1e-9 then return 0 end
+	local l = (avg - (min + max) / 2) / ((max - min) / 6)
+	if l < 1e-6 then return 0 end
+	return math.min(l, 1)
+end
+
+-- One hand (or the skill, for spells): its rolls as PoB modelled them.
+local function rollModel(o)
+	-- Stored min/max include PoB's expected double/triple damage multiplier; take it back
+	-- out so those become their own draws.
+	local ddChance = (o.DoubleDamageChance or 0) / 100
+	local tdChance = (o.TripleDamageChance or 0) / 100
+	local ddScale = 1 + ddChance + 2 * tdChance
+	local types = {}
+	for _, t in ipairs(DAMAGE_TYPES) do
+		local entry = { type = t }
+		for _, pass in ipairs({ { "hit", "StoredHit", "HitAverage" }, { "crit", "StoredCrit", "CritAverage" } }) do
+			local key, stored, eff = pass[1], pass[2], pass[3]
+			local min, max, avg = o[t .. stored .. "Min"], o[t .. stored .. "Max"], o[t .. stored .. "Avg"]
+			if type(min) == "number" and type(avg) == "number" and avg > 0 then
+				-- Enemy mitigation: PoB's effective average over its pre-mitigation average.
+				local mitigation = (o[t .. eff] or avg) / avg
+				entry[key] = {
+					min = min * mitigation / ddScale,
+					max = max * mitigation / ddScale,
+					lucky = luckyChance(min, max, avg),
+					mitigation = mitigation,
+				}
+			end
+		end
+		if entry.hit or entry.crit then table.insert(types, entry) end
+	end
+	return {
+		hitChance = (o.HitChance or 100) / 100,
+		critChance = (o.CritChance or 0) / 100,
+		critMultiplier = o.CritMultiplier,
+		doubleDamageChance = ddChance,
+		tripleDamageChance = tdChance,
+		types = types,
+		pob = { averageHit = o.AverageHit, averageDamage = o.AverageDamage },
+	}
+end
+
+-- args: { group = "Shred" | 1, config = { conditionSurrounded = true, ... } }
+-- Config overrides apply only for this calculation; the build is restored afterwards.
+function commands.hit_distribution(args)
+	requireBuild()
+	local group, index = findSkillGroup(args.group or build.mainSocketGroup)
+	local input = build.configTab.input
+	local known = {}
+	for _, opt in ipairs(require("Modules.ConfigOptions")) do
+		if opt.var then known[opt.var] = true end
+	end
+	local overrides = args.config or {}
+	for var in pairs(overrides) do
+		if not known[var] then error("unknown config var '" .. tostring(var) .. "'", 0) end
+	end
+
+	local origMain, saved = build.mainSocketGroup, {}
+	local function recalc()
+		build.configTab:BuildModList()
+		build.buildFlag = true
+		frame()
+	end
+
+	local ok, result = pcall(function()
+		build.mainSocketGroup = index
+		for var, value in pairs(overrides) do
+			saved[var] = { value = input[var] }
+			if value == json.null then value = nil end
+			input[var] = value
+		end
+		recalc()
+		local out = build.calcsTab.mainOutput
+		local ms = build.calcsTab.mainEnv.player.mainSkill
+		local hands = {}
+		if out.MainHand or out.OffHand then
+			-- A hand without an average hit doesn't attack with this skill.
+			for _, h in ipairs({ { "Main Hand", out.MainHand }, { "Off Hand", out.OffHand } }) do
+				if h[2] and type(h[2].AverageHit) == "number" then
+					table.insert(hands, { hand = h[1], model = rollModel(h[2]) })
+				end
+			end
+		else
+			table.insert(hands, { hand = "Skill", model = rollModel(out) })
+		end
+		local applied = {}
+		for var in pairs(overrides) do applied[var] = num(input[var]) end
+		return {
+			group = index,
+			skill = ms and ms.activeEffect and ms.activeEffect.grantedEffect.name,
+			config = applied,
+			hands = hands,
+			pob = { averageHit = num(out.AverageHit), averageDamage = num(out.AverageDamage),
+				totalDPS = num(out.TotalDPS), speed = num(out.Speed) },
+		}
+	end)
+
+	for var, s in pairs(saved) do input[var] = s.value end
+	build.mainSocketGroup = origMain
+	recalc()
+	if not ok then error(result, 0) end
+	return result
+end
+
 -- Real PoE2 gem text from PoB's data. args: { name = "Shred" }
 function commands.describe_skill(args)
 	local want = tostring(args.name or ""):lower()

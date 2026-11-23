@@ -65,6 +65,28 @@ GET /builds/{id}/dashboard[?download=true] baseline card + every notable/keyston
 The dashboard response is cached per build until the build changes (the first request
 takes about 4s). `?download=true` returns it as a file, for sketching views in Observable.
 
+## Hit distributions
+
+PoB reports one average per hit. `hit_distribution` in `engine/worker.lua` recovers the random
+draws behind that average from the same calculation: hit or miss, crit or not, each damage
+type's uniform roll (after enemy resistances and armour), lucky rolls, double/triple damage.
+`api/distribution.py` samples them. The model's exact mean equals PoB's AverageDamage (tested).
+
+```
+POST /builds/{id}/distribution
+  {"skill": "Shred", "samples": 20000,
+   "scenarios": [{"name": "As configured"},
+                 {"name": "Surrounded", "config": {"conditionSurrounded": true}}]}
+```
+
+Scenario config overrides apply to that calculation only; the build isn't changed. Each
+scenario returns PoB's averages, the extracted model, a summary (quantiles, miss/crit share)
+and the samples as columns (damage, outcome, multiplier, hand, and damage by type unless
+`by_type` is false). The dashboard charts it; "Download the samples" saves the full data.
+
+Inherits PoB's simplifications: armour reduction uses the average hit, and effects PoB
+averages as uptime (rather than as a chance per hit) stay averaged.
+
 ## Snapshots (build history)
 
 Every build loaded through `POST /builds` is also saved as a snapshot: the XML as pasted,
