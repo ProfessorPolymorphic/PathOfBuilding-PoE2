@@ -9,8 +9,9 @@ what-ifs and equips modify. Layout, one pair per snapshot:
     <dir>/<id>.json     metadata + engine summary
     <dir>/<id>.xml.gz   the build XML as pasted
 
-The id is a hash of the build's content, so pasting the same build twice finds the existing
-snapshot instead of storing a duplicate.
+Each snapshot records a hash of the build's content, so pasting the same build twice for the
+same character finds the existing snapshot instead of storing a duplicate. The same build pasted
+under another character gets its own snapshot, so neither character's history has a gap.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -32,9 +34,13 @@ SNAPSHOT_ID_RE = re.compile(r"^[0-9a-f]{16}$")
 _STAT_CACHE_RE = re.compile(r"<(?:Player|Minion)Stat\b[^>]*/>")
 
 
-def content_id(xml: str) -> str:
-    """Stable id for a build: ignores PoB's cached stats and whitespace."""
-    canonical = re.sub(r"\s+", "", _STAT_CACHE_RE.sub("", xml))
+def content_hash(xml: str) -> str:
+    """Stable fingerprint of a build: ignores PoB's cached stats, indentation and blank lines.
+    Line breaks are kept: item text is parsed line by line, so joining two mod lines changes
+    the item. PoB trims each item line and skips blank ones (Item.lua, ParseRaw), so those
+    differences don't change the build and are dropped here too."""
+    lines = (line.strip() for line in _STAT_CACHE_RE.sub("", xml).splitlines())
+    canonical = "\n".join(line for line in lines if line)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
@@ -56,12 +62,16 @@ class SnapshotStore:
             now: datetime | None = None) -> tuple[dict, bool]:
         """Save a pasted build. Returns (metadata, created); created is False when this exact
         build was already saved, in which case the earlier snapshot is returned unchanged."""
-        snap_id = content_id(xml)
-        if existing := self.get(snap_id):
-            return existing, False
+        character = (character or "").strip() or default_character(summary)
+        digest = content_hash(xml)
+        for existing in self.list(character):
+            if existing.get("content_hash") == digest:
+                return existing, False
+        snap_id = uuid.uuid4().hex[:16]
         meta = {
             "id": snap_id,
-            "character": (character or "").strip() or default_character(summary),
+            "content_hash": digest,
+            "character": character,
             "taken_at": (now or datetime.now(timezone.utc)).isoformat(timespec="seconds"),
             "level": summary.get("level"),
             "class": summary.get("class"),
