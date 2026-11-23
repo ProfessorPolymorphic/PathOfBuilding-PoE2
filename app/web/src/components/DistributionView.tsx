@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   api, type BuildSummary, type ConfigOption, type Distribution, type DistScenario, type Outcome,
 } from '../api'
-import { DAMAGE_COLORS, DAMAGE_ORDER, OUTCOME_COLORS, inkOn } from '../colors'
+import { DAMAGE_COLORS, DAMAGE_ORDER, DARK_INK, OUTCOME_COLORS, PALE_INK, inkOn } from '../colors'
 import { density } from '../density'
 import { formatNumber } from '../format'
 
@@ -456,7 +456,7 @@ function RollModel({ scenario, names, focus, onFocus }: {
           tip: { format: { x: false, y: true, fill: false, Type: true, Average: (d: number) => formatNumber(d) } },
         })),
         // Only label segments wide enough to hold the name, in ink that reads on that fill.
-        ...['#17150f', '#f3ead6'].map((ink) => Plot.text(mix, Plot.stackX({
+        ...[DARK_INK, PALE_INK].map((ink) => Plot.text(mix, Plot.stackX({
           x: 'value', y: 'outcome', z: 'type', order: domain, fill: ink, fontWeight: 600,
           text: (d: { type: string; value: number; outcome: string }) =>
             d.value / totals[d.outcome] > 0.17 && inkOn(d.type) === ink ? d.type : '',

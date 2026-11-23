@@ -86,7 +86,7 @@ function MultiRow({ row, mode }: { row: CardRow; mode: Props['mode'] }) {
   return (
     <div className="cc-multi">
       <span className="cc-label">{row.label}</span>
-      <ul style={{ '--cols': row.cells.length } as React.CSSProperties}>
+      <ul data-cols={row.cells.length} style={{ '--cols': row.cells.length } as React.CSSProperties}>
         {row.cells.map((cell) => (
           <li key={cell.key} className={`cc-cell ${direction(cell.better, cell.delta)} tone-${cell.tone ?? 'none'}`}>
             <span className="cc-cell-label">{cell.label}</span>

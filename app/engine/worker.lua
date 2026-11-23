@@ -181,10 +181,10 @@ local CARD_LAYOUT = {
 	{ group = "Survival", rows = {
 		{ { key = "TotalEHP", label = "Effective HP" } },
 		{ label = "Max hit",
-			{ key = "PhysicalMaximumHitTaken", label = "Phys", tone = "physical" },
+			{ key = "PhysicalMaximumHitTaken", label = "Physical", tone = "physical" },
 			{ key = "FireMaximumHitTaken", label = "Fire", tone = "fire" },
 			{ key = "ColdMaximumHitTaken", label = "Cold", tone = "cold" },
-			{ key = "LightningMaximumHitTaken", label = "Light", tone = "lightning" },
+			{ key = "LightningMaximumHitTaken", label = "Lightning", tone = "lightning" },
 			{ key = "ChaosMaximumHitTaken", label = "Chaos", tone = "chaos" } },
 	} },
 }
