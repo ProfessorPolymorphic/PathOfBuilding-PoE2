@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field, model_validator
 
 import buildcode
 import settings
+import snapshots
 from agent import Agent, ToolEvent
 from engine import MUTATING, EngineCrashed, EngineError, EngineWorker
 
@@ -39,6 +40,8 @@ MAX_WORKERS = int(os.getenv("POB_MAX_WORKERS", "4"))
 # Loaded builds are saved here as XML so they survive server restarts and rebuilds.
 STATE_DIR = Path(os.getenv("POB_STATE_DIR", Path(__file__).resolve().parent.parent / ".state" / "builds"))
 BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}$")
+# Every pasted build is also kept here, unchanged, as history (see snapshots.py).
+SNAPSHOT_DIR = Path(os.getenv("POB_SNAPSHOT_DIR", STATE_DIR.parent / "snapshots"))
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +139,7 @@ class SessionManager:
 
 
 sessions = SessionManager(MAX_WORKERS)
+history = snapshots.SnapshotStore(SNAPSHOT_DIR)
 
 
 @asynccontextmanager
@@ -182,6 +186,8 @@ class LoadBuild(BaseModel):
     code: str | None = Field(None, description="PoB share code")
     xml: str | None = Field(None, description="Raw PoB build XML")
     name: str | None = None
+    character: str | None = Field(None, max_length=60,
+                                  description="Groups snapshots; defaults to the character's class")
 
     @model_validator(mode="after")
     def one_source(self):
@@ -247,7 +253,18 @@ async def load_build(body: LoadBuild):
     except Exception:
         await sessions.delete(session.id)
         raise
-    return {"build_id": session.id, "summary": summary}
+    return {"build_id": session.id, "summary": summary, "snapshot": _save_snapshot(xml, summary, body.character)}
+
+
+def _save_snapshot(xml: str, summary: dict, character: str | None) -> dict | None:
+    """Keep the pasted build as history. A failure here is logged, not raised: losing one
+    snapshot is better than refusing to load the build."""
+    try:
+        meta, created = history.add(xml, summary, character)
+    except OSError as e:
+        log.error("could not save snapshot: %s", e)
+        return None
+    return {"id": meta["id"], "character": meta["character"], "taken_at": meta["taken_at"], "created": created}
 
 
 @app.get("/builds")
@@ -463,6 +480,66 @@ async def reset_chat(build_id: str):
     async with session.chat_lock:
         if session.agent:
             session.agent.reset()
+
+
+# -- snapshots: history of pasted builds --
+
+class SnapshotUpdate(BaseModel):
+    character: str = Field(..., min_length=1, max_length=60)
+
+
+def _snapshot(snap_id: str) -> dict:
+    if not (meta := history.get(snap_id)):
+        raise HTTPException(404, f"no snapshot with id {snap_id}")
+    return meta
+
+
+@app.get("/characters")
+async def list_characters():
+    """Characters with saved snapshots, most recently pasted first."""
+    return history.characters()
+
+
+@app.get("/snapshots")
+async def list_snapshots(character: str | None = None):
+    """Snapshots oldest first, each with its sidebar stats as {stat: value}."""
+    return [snapshots.listing(m) for m in history.list(character)]
+
+
+@app.get("/snapshots/{snap_id}")
+async def get_snapshot(snap_id: str, include_xml: bool = False):
+    meta = _snapshot(snap_id)
+    if include_xml:
+        meta = {**meta, "xml": history.xml(snap_id)}
+    return meta
+
+
+@app.patch("/snapshots/{snap_id}")
+async def update_snapshot(snap_id: str, body: SnapshotUpdate):
+    _snapshot(snap_id)
+    return snapshots.listing(history.rename(snap_id, body.character))
+
+
+@app.delete("/snapshots/{snap_id}", status_code=204)
+async def delete_snapshot(snap_id: str):
+    _snapshot(snap_id)
+    history.delete(snap_id)
+
+
+@app.post("/snapshots/{snap_id}/load", status_code=201)
+async def load_snapshot(snap_id: str):
+    """Open a saved snapshot as a working build (doesn't record a new snapshot)."""
+    meta = _snapshot(snap_id)
+    xml = history.xml(snap_id)
+    if xml is None:
+        raise HTTPException(404, f"snapshot {snap_id} has no saved build")
+    session = await sessions.create()
+    try:
+        summary = await sessions.call(session, "load_xml", xml=xml, name=meta["character"])
+    except Exception:
+        await sessions.delete(session.id)
+        raise
+    return {"build_id": session.id, "summary": summary}
 
 
 # -- web app --

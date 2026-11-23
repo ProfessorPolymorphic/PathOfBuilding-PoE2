@@ -47,6 +47,25 @@ the API works normally.
 search/rank/compare, item compare, config, main skill). The model chooses tools and
 explains; all numbers come from the engine. Tool calls are shown dimmed in the chat.
 
+## Snapshots (build history)
+
+Every build loaded through `POST /builds` is also saved as a snapshot: the XML as pasted,
+the paste time, level and the engine summary. Snapshots never change afterwards; what-ifs and
+equips only touch the working copy. Pasting the same build again doesn't add a duplicate (the
+id hashes the build, ignoring PoB's cached stats). They're grouped by character: pass
+`"character": "Name"` when loading, otherwise the class is used.
+
+```
+GET    /characters                    characters with snapshot counts and latest level
+GET    /snapshots?character=Druid     history, oldest first, sidebar stats as {stat: value}
+GET    /snapshots/{id}?include_xml=1  one snapshot with full summary (and XML)
+PATCH  /snapshots/{id}                {"character": "..."} to regroup it
+POST   /snapshots/{id}/load           reopen it as a working build
+DELETE /snapshots/{id}
+```
+
+Stored in `POB_SNAPSHOT_DIR` (default `app/.state/snapshots`; `/data/snapshots` in Docker).
+
 ## Docker
 
 ```sh
