@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api, ApiError, type BuildSummary } from './api'
-import { BuildDetails } from './components/BuildDetails'
 import { BuildLoader } from './components/BuildLoader'
 import { Chat, type ChatEntry } from './components/Chat'
-import { StatPanel } from './components/StatPanel'
+import { Dashboard } from './components/Dashboard'
 
 const BUILD_KEY = 'pob.buildId'
 const chatKey = (id: string) => `pob.chat.${id}`
@@ -124,10 +123,7 @@ export default function App() {
 
       {build && !showLoader && buildId && (
         <main className="workspace">
-          <aside className="sidebar">
-            <StatPanel stats={build.stats} />
-            <BuildDetails build={build} />
-          </aside>
+          <Dashboard buildId={buildId} build={build} onBuildLost={buildLost} />
           <Chat
             buildId={buildId}
             entries={entries}

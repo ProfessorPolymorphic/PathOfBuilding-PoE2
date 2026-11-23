@@ -50,6 +50,38 @@ async def test_agent_runs_tools_against_engine():
         await worker.close()
 
 
+HELMET = """Item Class: Helmets
+Rarity: Rare
+Doom Crown
+Hallowed Crown
+--------
++80 to maximum Life
++40% to Cold Resistance"""
+
+
+@pytest.mark.anyio
+async def test_compare_card_goes_to_user_not_model():
+    worker = EngineWorker()
+    await worker.start()
+    try:
+        await worker.call("load_xml", xml=BUILD_XML)
+        client = FakeClient([
+            FakeMessage(content=None, tool_calls=[
+                tool_call(1, "compare_item", {"slot": "Helmet", "item_text": HELMET}),
+            ]),
+            FakeMessage(content="Done.", tool_calls=None),
+        ])
+        events = []
+        a = Agent(engine_call=worker.call, model="fake", client=client, on_tool=events.append)
+        await a.ask("is this helmet better?")
+        tool_msg = next(m for m in client.requests[1] if m["role"] == "tool")
+        assert "card" not in json.loads(tool_msg["content"])
+        assert events[0].card and events[0].card["core"][0]["group"] == "Damage"
+        assert events[0].card_title == "Doom Crown, Hallowed Crown in Helmet (replacing Victory Corona, Hallowed Crown)"
+    finally:
+        await worker.close()
+
+
 @pytest.mark.anyio
 async def test_failed_question_is_rolled_back():
     async def engine_call(cmd, **args):

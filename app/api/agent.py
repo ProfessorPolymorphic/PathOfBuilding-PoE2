@@ -230,6 +230,22 @@ class ToolEvent:
     args: dict
     ok: bool
     summary: str
+    # Change preview card from a compare_* tool, shown to the user as the engine produced it.
+    card: dict | None = None
+    card_title: str | None = None
+
+
+def _card_title(result: dict) -> str:
+    """What a compared change was, in the words of the engine's own result."""
+    if "candidate" in result:
+        current = result.get("current")
+        return f"{result['candidate']} in {result['slot']}" + (f" (replacing {current})" if current else "")
+    parts = []
+    if result.get("added"):
+        parts.append("+" + ", ".join(result["added"]))
+    if result.get("removed"):
+        parts.append("−" + ", ".join(result["removed"]))
+    return "; ".join(parts) or "No change"
 
 
 @dataclass
@@ -288,10 +304,13 @@ class Agent:
             return json.dumps({"error": f"unknown tool {name}"}), ToolEvent(name, args, False, "unknown tool")
         except EngineError as e:
             return json.dumps({"error": str(e)}), ToolEvent(name, args, False, str(e))
+        # The card repeats `changes` in display form; the user sees it, the model doesn't need it.
+        card = result.pop("card", None) if isinstance(result, dict) else None
         text = json.dumps(_compact(result), separators=(",", ":"))
         if len(text) > MAX_TOOL_RESULT_CHARS:
             text = text[:MAX_TOOL_RESULT_CHARS] + '..."[truncated: narrow the query]"'
-        return text, ToolEvent(name, args, True, f"{len(text)} chars")
+        return text, ToolEvent(name, args, True, f"{len(text)} chars",
+                               card=card, card_title=_card_title(result) if card else None)
 
     async def ask(self, question: str) -> str:
         """Answer one user message, calling engine tools as needed.

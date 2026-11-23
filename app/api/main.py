@@ -55,6 +55,9 @@ class Session:
         self.last_used = time.monotonic()
         self.agent: Agent | None = None  # created on first chat message
         self.chat_lock = asyncio.Lock()  # one question at a time per build
+        # Dashboard data for the build as it was when computed: (xml it describes, data).
+        self.dashboard: tuple[str | None, dict] | None = None
+        self.dashboard_lock = asyncio.Lock()
 
 
 class SessionManager:
@@ -300,6 +303,60 @@ async def export(build_id: str, include_xml: bool = False):
     return out
 
 
+@app.get("/builds/{build_id}/card")
+async def card(build_id: str):
+    """The change preview card's core stats for the build as it is."""
+    return await sessions.call(sessions.get(build_id), "card")
+
+
+# Reachable passives tested for the dashboard: every notable/keystone within this many points.
+DASHBOARD_MAX_COST = 5
+
+
+async def _dashboard(session: Session) -> dict:
+    """Baseline card plus every reachable notable/keystone tested on its own, each with its
+    change preview card. One rank_nodes pass (~4s) serves both the damage and defence lists;
+    the result is cached until the build changes."""
+    async with session.dashboard_lock:
+        if session.dashboard and session.dashboard[0] == session.worker.xml_snapshot \
+                and session.worker.xml_snapshot is not None:
+            return session.dashboard[1]
+        summary = await sessions.call(session, "summary")
+        baseline = await sessions.call(session, "card")
+        ranked = await sessions.call(session, "rank_nodes", stat="DPS", max_cost=DASHBOARD_MAX_COST,
+                                     limit=300, cards=True, also=["TotalEHP"])
+        nodes = [{
+            "id": r["id"], "name": r["name"], "type": r["type"], "cost": r["cost"],
+            "path": r.get("path") or [], "stats": r.get("stats") or [], "card": r["card"],
+        } for r in ranked["results"]]
+        data = {
+            "build": {k: summary.get(k) for k in ("name", "class", "ascendancy", "level", "mainSkill")},
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "baseline": baseline,
+            "nodes": {
+                "max_cost": DASHBOARD_MAX_COST,
+                "types": ["Notable", "Keystone"],
+                "evaluated": ranked["evaluated"],
+                "candidates": nodes,
+            },
+        }
+        session.dashboard = (session.worker.xml_snapshot, data)
+        return data
+
+
+@app.get("/builds/{build_id}/dashboard")
+async def dashboard(build_id: str, download: bool = False):
+    """Everything the dashboard shows, straight from the engine. With download=true it comes
+    as a file, for sketching views against real data (e.g. in Observable)."""
+    data = await _dashboard(sessions.get(build_id))
+    if not download:
+        return data
+    b = data["build"]
+    name = re.sub(r"[^A-Za-z0-9]+", "-", f"{b.get('ascendancy') or b.get('class')}-{b.get('level')}").strip("-")
+    return JSONResponse(data, headers={
+        "Content-Disposition": f'attachment; filename="dashboard-{name.lower()}.json"'})
+
+
 @app.put("/builds/{build_id}/main-skill")
 async def set_main_skill(build_id: str, body: MainSkill):
     return await sessions.call(sessions.get(build_id), "set_main_skill", index=body.index)
@@ -332,6 +389,7 @@ class RankNodes(BaseModel):
     candidates: list[str | int] | None = None
     limit: int = Field(10, ge=1, le=100)
     also: list[str] | None = None
+    cards: bool = Field(False, description="Attach a change preview card to each result")
 
 
 @app.post("/builds/{build_id}/nodes/rank")
@@ -408,14 +466,18 @@ async def chat(build_id: str, body: ChatMessage):
             raise HTTPException(502, f"language model request failed: {e}") from e
         return {
             "answer": answer,
-            "tool_calls": [{"name": e.name, "args": e.args, "ok": e.ok, "summary": e.summary} for e in events],
+            "tool_calls": [_tool_json(e) for e in events],
             "tokens": agent.tokens_used - tokens_before,
             "model": agent.model,
         }
 
 
 def _tool_json(e: ToolEvent) -> dict:
-    return {"name": e.name, "args": e.args, "ok": e.ok, "summary": e.summary}
+    out = {"name": e.name, "args": e.args, "ok": e.ok, "summary": e.summary}
+    if e.card:
+        out["card"] = e.card
+        out["card_title"] = e.card_title
+    return out
 
 
 @app.post("/builds/{build_id}/chat/stream")

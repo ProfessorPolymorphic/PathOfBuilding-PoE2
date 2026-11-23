@@ -20,3 +20,8 @@ function round(v: number): string {
   const digits = abs >= 100 || Number.isInteger(v) ? 0 : abs >= 10 ? 1 : 2
   return v.toLocaleString(undefined, { maximumFractionDigits: digits })
 }
+
+// Plain number for cards: whole numbers from 100 up, one decimal from 10, two below.
+export function formatNumber(v: number): string {
+  return round(v)
+}

@@ -47,6 +47,24 @@ the API works normally.
 search/rank/compare, item compare, config, main skill). The model chooses tools and
 explains; all numbers come from the engine. Tool calls are shown dimmed in the chat.
 
+## Dashboard and change preview card
+
+Pasting a build fills a dashboard beside the chat. Every candidate change is shown as a
+change preview card: the same core stats every time (Total DPS; Life, ES, Spirit; Armour,
+Evasion, resistances; effective HP, max hit by type), then any other sidebar stat that
+changed. The engine builds the card (`buildCard` in `engine/worker.lua`), so its numbers
+never pass through the LLM. `compare_item` and `compare_nodes` return one as `card`, and the
+chat shows the cards for every what-if the agent tested. The model doesn't see the cards.
+
+```
+GET /builds/{id}/card                      core stats of the build as it is
+GET /builds/{id}/dashboard[?download=true] baseline card + every notable/keystone within
+                                           5 points tested with its path, each with a card
+```
+
+The dashboard response is cached per build until the build changes (the first request
+takes about 4s). `?download=true` returns it as a file, for sketching views in Observable.
+
 ## Snapshots (build history)
 
 Every build loaded through `POST /builds` is also saved as a snapshot: the XML as pasted,

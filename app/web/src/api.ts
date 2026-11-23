@@ -53,11 +53,69 @@ export interface BuildSummary {
   stats: Stats
 }
 
+// Change preview card (engine/worker.lua buildCard). Numbers are engine output, untouched.
+export interface CardCell {
+  key: string
+  label: string
+  tone?: 'fire' | 'cold' | 'lightning' | 'chaos' | 'physical'
+  unit?: '%'
+  before?: number | string
+  after?: number | string
+  delta?: number   // absent when unchanged
+  pct?: number
+  better?: boolean
+}
+
+export interface CardRow {
+  label?: string   // set when several stats share the row (resistances, max hit)
+  cells: CardCell[]
+}
+
+export interface CardGroup {
+  group: 'Damage' | 'Pools' | 'Mitigation' | 'Survival'
+  rows: CardRow[]
+}
+
+// A changed sidebar stat outside the core set.
+export interface OtherChange {
+  stat: string
+  label: string
+  before: number | string
+  after: number | string
+  delta: number | string
+  pct?: number | string
+  better: boolean
+}
+
+export interface Card {
+  core: CardGroup[]
+  other: OtherChange[]
+}
+
+export interface NodeCandidate {
+  id: number
+  name: string
+  type: string
+  cost: number
+  path: string[]
+  stats: string[]
+  card: Card
+}
+
+export interface Dashboard {
+  build: { name: string; class: string; ascendancy?: string; level: number; mainSkill?: string }
+  generated_at: string
+  baseline: Card
+  nodes: { max_cost: number; types: string[]; evaluated: number; candidates: NodeCandidate[] }
+}
+
 export interface ToolCall {
   name: string
   args: Record<string, unknown>
   ok: boolean
   summary: string
+  card?: Card
+  card_title?: string
 }
 
 export interface ChatReply {
@@ -153,6 +211,8 @@ export const api = {
   loadBuild: (code: string) =>
     request<{ build_id: string; summary: BuildSummary }>('POST', '/builds', { code }),
   summary: (id: string) => request<BuildSummary>('GET', `/builds/${id}`),
+  dashboard: (id: string) => request<Dashboard>('GET', `/builds/${id}/dashboard`),
+  dashboardDownloadUrl: (id: string) => `/builds/${id}/dashboard?download=true`,
   chat: (id: string, message: string) => request<ChatReply>('POST', `/builds/${id}/chat`, { message }),
   resetChat: (id: string) => request<void>('DELETE', `/builds/${id}/chat`),
 }

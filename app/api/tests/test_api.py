@@ -157,6 +157,61 @@ def test_rank_nodes_matches_compare(client, build):
     assert cmp["pointDelta"] == top["cost"]
 
 
+def card_cell(card: dict, key: str) -> dict:
+    return next(c for g in card["core"] for row in g["rows"] for c in row["cells"] if c["key"] == key)
+
+
+def test_baseline_card_has_core_set(client, build):
+    card = client.get(f"/builds/{build['build_id']}/card").json()
+    assert [g["group"] for g in card["core"]] == ["Damage", "Pools", "Mitigation", "Survival"]
+    life = card_cell(card, "Life")
+    assert life["before"] == life["after"] == 1254 and "delta" not in life
+    # Resistances and max hits each share one row.
+    rows = {r.get("label"): r for g in card["core"] for r in g["rows"]}
+    assert [c["key"] for c in rows["Resistances"]["cells"]] == \
+        ["FireResist", "ColdResist", "LightningResist", "ChaosResist"]
+    assert len(rows["Max hit"]["cells"]) == 5
+    assert card["other"] == []
+
+
+def test_item_compare_card_shows_every_core_stat(client, build):
+    """Unchanged core stats stay on the card; changed ones carry delta and direction."""
+    cmp = client.post(f"/builds/{build['build_id']}/items/compare", json={"slot": "Helmet", "item": HELMET}).json()
+    card = cmp["card"]
+    for key in ("FireResist", "ColdResist", "LightningResist", "ChaosResist", "Spirit"):
+        card_cell(card, key)
+    by_stat = {c["stat"]: c for c in cmp["changes"]["player"]}
+    for key in ("Life", "ColdResist"):
+        cell = card_cell(card, key)
+        assert cell["after"] == pytest.approx(by_stat[key]["after"])
+        assert cell["delta"] == pytest.approx(by_stat[key]["delta"])
+        assert cell["better"] == by_stat[key]["better"]
+    core_keys = {c["key"] for g in card["core"] for r in g["rows"] for c in r["cells"]}
+    assert not core_keys & {c["stat"] for c in card["other"]}
+
+
+def test_dashboard(client, build):
+    bid = build["build_id"]
+    data = client.get(f"/builds/{bid}/dashboard").json()
+    assert data["build"]["ascendancy"] == "Shaman"
+    assert data["baseline"] == client.get(f"/builds/{bid}/card").json()
+    nodes = data["nodes"]["candidates"]
+    assert len(nodes) == data["nodes"]["evaluated"] > 0
+    assert all(n["cost"] <= 5 and n["path"][-1] == n["name"] and len(n["path"]) == n["cost"] for n in nodes)
+    # Each node's card matches a direct what-if of that node.
+    top = nodes[0]
+    cmp = client.post(f"/builds/{bid}/nodes/compare", json={"add": [top["id"]]}).json()
+    assert top["card"] == cmp["card"]
+    # Cached until the build changes; download comes as a file.
+    from main import sessions
+    assert sessions.get(bid).dashboard is not None
+    r = client.get(f"/builds/{bid}/dashboard", params={"download": True})
+    assert "attachment" in r.headers["content-disposition"] and r.json()["generated_at"] == data["generated_at"]
+    client.post(f"/builds/{bid}/items/equip", json={"slot": "Helmet", "item": HELMET})
+    after = client.get(f"/builds/{bid}/dashboard").json()
+    assert card_cell(after["baseline"], "Life")["before"] != card_cell(data["baseline"], "Life")["before"]
+
+
 def test_item_details(client, build):
     r = client.get(f"/builds/{build['build_id']}/items", params={"slot": "Helmet"}).json()
     text = r["items"][0]["text"]

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { api, ApiError, type ToolCall } from '../api'
+import { ChangeCard } from './ChangeCard'
 
 export interface ChatEntry {
   role: 'user' | 'assistant' | 'error'
@@ -177,12 +178,21 @@ function Working({ progress }: { progress: Progress }) {
 function Entry({ entry }: { entry: ChatEntry }) {
   if (entry.role === 'user') return <div className="msg user">{entry.text}</div>
   if (entry.role === 'error') return <div className="msg error" role="alert">{entry.text}</div>
+  const cards = (entry.toolCalls ?? []).filter((c) => c.ok && c.card)
   return (
     <div className="msg assistant">
       {entry.toolCalls && entry.toolCalls.length > 0 && <ToolTrace calls={entry.toolCalls} tokens={entry.tokens} />}
       <div className="markdown">
         <Markdown remarkPlugins={[remarkGfm]}>{entry.text}</Markdown>
       </div>
+      {cards.length > 0 && (
+        <div className="chat-cards">
+          <h3>Tested in the engine</h3>
+          {cards.map((c, i) => (
+            <ChangeCard key={i} card={c.card!} title={c.card_title ?? c.name} subtitle="What-if, not applied" />
+          ))}
+        </div>
+      )}
     </div>
   )
 }

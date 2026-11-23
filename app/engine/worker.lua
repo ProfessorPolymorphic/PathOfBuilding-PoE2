@@ -152,6 +152,109 @@ local function diffOutputs(base, new)
 	return result
 end
 
+---------------------------------------------------------------------------
+-- Change preview card (app/VISION.md): a fixed core set of stats that every
+-- candidate change is shown against, plus any other sidebar stat that changed.
+-- Built here so the numbers go from the engine to the screen untouched.
+---------------------------------------------------------------------------
+
+-- Groups, then rows; a row with several stats is shown on one line (resists, max hits).
+-- "DPS" is resolved per build to CombinedDPS (hits + DoT) or TotalDPS.
+local CARD_LAYOUT = {
+	{ group = "Damage", rows = {
+		{ { key = "DPS", label = "Total DPS" } },
+	} },
+	{ group = "Pools", rows = {
+		{ { key = "Life", label = "Life" } },
+		{ { key = "EnergyShield", label = "Energy Shield" } },
+		{ { key = "Spirit", label = "Spirit" } },
+	} },
+	{ group = "Mitigation", rows = {
+		{ { key = "Armour", label = "Armour" } },
+		{ { key = "Evasion", label = "Evasion" } },
+		{ label = "Resistances",
+			{ key = "FireResist", label = "Fire", tone = "fire", unit = "%" },
+			{ key = "ColdResist", label = "Cold", tone = "cold", unit = "%" },
+			{ key = "LightningResist", label = "Lightning", tone = "lightning", unit = "%" },
+			{ key = "ChaosResist", label = "Chaos", tone = "chaos", unit = "%" } },
+	} },
+	{ group = "Survival", rows = {
+		{ { key = "TotalEHP", label = "Effective HP" } },
+		{ label = "Max hit",
+			{ key = "PhysicalMaximumHitTaken", label = "Phys", tone = "physical" },
+			{ key = "FireMaximumHitTaken", label = "Fire", tone = "fire" },
+			{ key = "ColdMaximumHitTaken", label = "Cold", tone = "cold" },
+			{ key = "LightningMaximumHitTaken", label = "Light", tone = "lightning" },
+			{ key = "ChaosMaximumHitTaken", label = "Chaos", tone = "chaos" } },
+	} },
+}
+
+local function dpsKey(output)
+	if type(output.CombinedDPS) == "number" and output.CombinedDPS > 0 then return "CombinedDPS" end
+	return "TotalDPS"
+end
+
+-- Output keys the core set reads, for the given DPS key.
+local function cardKeys(dps)
+	local keys = {}
+	for _, g in ipairs(CARD_LAYOUT) do
+		for _, row in ipairs(g.rows) do
+			for _, cell in ipairs(row) do keys[cell.key == "DPS" and dps or cell.key] = true end
+		end
+	end
+	-- Every DPS variant counts as core, so the "other" list doesn't repeat it.
+	keys.CombinedDPS, keys.TotalDPS = true, true
+	return keys
+end
+
+local function cardCell(def, key, base, new)
+	local a = type(base[key]) == "number" and base[key] or nil
+	local b = type(new[key]) == "number" and new[key] or nil
+	local cell = { key = key, label = def.label, tone = def.tone, unit = def.unit,
+		before = num(a), after = num(b) }
+	if a and b then
+		local d = b - a
+		if d > 0.001 or d < -0.001 then
+			cell.delta = num(d)
+			cell.pct = (a ~= 0 and a == a and a ~= math.huge) and num(d / math.abs(a) * 100) or nil
+			cell.better = d > 0
+		end
+	end
+	return cell
+end
+
+-- Card for a change from `base` to `new` calc outputs. With `new` omitted it describes
+-- the build as it is (after == before, no deltas).
+local function buildCard(base, new)
+	new = new or base
+	local dps = dpsKey(base)
+	local groups = {}
+	for _, g in ipairs(CARD_LAYOUT) do
+		local rows = {}
+		for _, row in ipairs(g.rows) do
+			local cells = {}
+			for _, def in ipairs(row) do
+				local cell = cardCell(def, def.key == "DPS" and dps or def.key, base, new)
+				if cell.before ~= nil or cell.after ~= nil then table.insert(cells, cell) end
+			end
+			if #cells > 0 then table.insert(rows, { label = row.label, cells = cells }) end
+		end
+		table.insert(groups, { group = g.group, rows = rows })
+	end
+	local other = {}
+	if new ~= base then
+		local core, seen = cardKeys(dps), {}
+		local env = build.calcsTab.mainEnv
+		for _, c in ipairs(diffStatList(build.displayStats, env.player, base, new)) do
+			if not core[c.stat] and not seen[c.stat] and not c.stat:match("^Spec:") then
+				seen[c.stat] = true
+				table.insert(other, c)
+			end
+		end
+	end
+	return { core = groups, other = other }
+end
+
 -- Resolve a passive node by numeric id or (case-insensitive) exact name.
 local function findNode(ref)
 	local nodes = build.spec.nodes
@@ -304,6 +407,12 @@ function commands.summary()
 		skills = skills,
 		stats = currentStats(),
 	}
+end
+
+-- The change preview card's core stats for the build as it is (no change applied).
+function commands.card()
+	requireBuild()
+	return buildCard(build.calcsTab.mainOutput)
 end
 
 -- Sidebar stats, or specific raw output keys: { keys = {"Life", "FireResist"} }
@@ -597,6 +706,7 @@ function commands.compare_item(args)
 		current = current and current.name or nil,
 		candidate = item.name,
 		changes = diffOutputs(base, new),
+		card = buildCard(base, new),
 	}
 end
 
@@ -638,20 +748,24 @@ function commands.compare_nodes(args)
 		added = added, removed = removed, skipped = skipped,
 		pointDelta = #added - #removed,
 		changes = diffOutputs(base, new),
+		card = buildCard(base, new),
 	}
 end
 
 -- Rank unallocated passives by how much each (with its path) improves one stat.
 -- Every candidate is evaluated independently against the current build.
--- args: { stat = "TotalDPS", query = "", types = {"Notable"}, max_cost = 5,
+-- args: { stat = "TotalDPS" | "DPS" (main skill total), query = "", types = {"Notable"}, max_cost = 5,
 --         candidates = {names/ids} (overrides query/types), limit = 10,
---         also = {"Life", "TotalEHP"} (extra stats to report deltas for) }
+--         also = {"Life", "TotalEHP"} (extra stats to report deltas for),
+--         cards = true (attach a change preview card to each result) }
 function commands.rank_nodes(args)
 	requireBuild()
-	local stat = args.stat or "TotalDPS"
 	local maxCost = tonumber(args.max_cost) or 5
 	local also = args.also or { "Life", "EnergyShield", "TotalEHP" }
 	local calcFunc, base = build.calcsTab:GetMiscCalculator()
+	-- "DPS" means the main skill's total, whichever key holds it for this build (as on the card).
+	local stat = args.stat or "TotalDPS"
+	if stat == "DPS" then stat = dpsKey(base) end
 	if type(base[stat]) ~= "number" then error("stat '" .. stat .. "' is not a numeric output", 0) end
 
 	local pool = {}
@@ -691,6 +805,12 @@ function commands.rank_nodes(args)
 				perPoint = num(d / #n.path),
 				otherDeltas = next(extra) and extra or nil,
 				stats = n.sd,
+				path = args.cards and (function()
+					local names = {}
+					for i = #n.path, 1, -1 do table.insert(names, n.path[i].dn) end
+					return names
+				end)() or nil,
+				card = args.cards and buildCard(base, out) or nil,
 			})
 		end
 	end
