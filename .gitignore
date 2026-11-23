@@ -50,3 +50,7 @@ runtime/SimpleGraphic/Screenshots
 
 .emmyrc.json
 .luarc.json
+
+# Python bytecode
+__pycache__/
+*.pyc

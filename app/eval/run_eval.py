@@ -83,7 +83,13 @@ def ungrounded_numbers(answer: str, sources: list[str]) -> list[str]:
         pool.extend(numbers_in(text))
     known = set()
     for v in pool:
-        known.update({v, v * 100, v / 100, -v})
+        # as given, as a percentage/fraction, negated, and a multiplier as a percent (1.62 -> 62%)
+        known.update({v, v * 100, v / 100, -v, round((v - 1) * 100, 6)})
+    # Simple arithmetic on two engine values (totals, differences) is legitimate, not invented.
+    distinct = sorted({round(v, 4) for v in pool if abs(v) >= 1})[:600]
+    for i, a in enumerate(distinct):
+        for b in distinct[i + 1:]:
+            known.update({a + b, abs(a - b)})
     def grounded(n: float) -> bool:
         tol = max(abs(n) * 0.012, 0.06)
         return any(abs(n - k) <= tol for k in known)

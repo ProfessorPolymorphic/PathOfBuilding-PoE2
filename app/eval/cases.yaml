@@ -103,7 +103,7 @@ cases:
     build: shaman.xml
     question: Which passives within 5 points would raise my cold max hit the most?
     claims:
-      - {text: "names {top} as the best or top option", expect: true, rank_top: {stat: ColdMaximumHitTaken, max_cost: 5, types: [Notable, Normal]}}
+      - {text: "names {top} as the best or top option", expect: true, rank_top: {stat: ColdMaximumHitTaken, max_cost: 5, types: [Notable, Normal, Keystone]}}
     tools_any: [rank_passives]
 
   - id: combo-notables
