@@ -51,9 +51,10 @@ explains; all numbers come from the engine. Tool calls are shown dimmed in the c
 
 Every build loaded through `POST /builds` is also saved as a snapshot: the XML as pasted,
 the paste time, level and the engine summary. Snapshots never change afterwards; what-ifs and
-equips only touch the working copy. Pasting the same build again doesn't add a duplicate (the
-id hashes the build, ignoring PoB's cached stats). They're grouped by character: pass
-`"character": "Name"` when loading, otherwise the class is used.
+equips only touch the working copy. They're grouped by character: pass `"character": "Name"`
+when loading, otherwise the class is used. Pasting the same build again for the same character
+doesn't add a duplicate (compared by a fingerprint that ignores PoB's cached stats and
+indentation, but not line breaks, which separate item mods).
 
 ```
 GET    /characters                    characters with snapshot counts and latest level

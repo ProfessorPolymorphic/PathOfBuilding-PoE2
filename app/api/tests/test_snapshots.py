@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 import buildcode
 import snapshots
-from snapshots import SnapshotStore, content_id
+from snapshots import SnapshotStore, content_hash
 
 BUILD_XML = (Path(__file__).resolve().parent / "fixtures" / "shaman.xml").read_text()
 SUMMARY = {"class": "Druid", "ascendancy": "Shaman", "level": 64, "mainSkill": "Shred",
@@ -22,10 +22,17 @@ def relevel(xml: str, level: int) -> str:
 
 # -- store --
 
-def test_id_ignores_cached_stats_and_whitespace():
-    noisy = BUILD_XML.replace('stat="Life" value="', 'stat="Life" value="9').replace("\t", "  ")
-    assert content_id(noisy) == content_id(BUILD_XML)
-    assert content_id(relevel(BUILD_XML, 65)) != content_id(BUILD_XML)
+def test_hash_ignores_cached_stats_indentation_and_blank_lines():
+    noisy = BUILD_XML.replace('stat="Life" value="', 'stat="Life" value="9').replace("\t", "  ").replace("\n", "\r\n\n")
+    assert content_hash(noisy) == content_hash(BUILD_XML)
+    assert content_hash(relevel(BUILD_XML, 65)) != content_hash(BUILD_XML)
+
+
+def test_hash_keeps_line_breaks_inside_item_text():
+    # Item text is parsed line by line: joining two mod lines changes the item.
+    joined = BUILD_XML.replace("Hallowed Crown\n", "Hallowed Crown ", 1)
+    assert joined != BUILD_XML
+    assert content_hash(joined) != content_hash(BUILD_XML)
 
 
 def test_same_build_is_stored_once(tmp_path):
@@ -36,6 +43,15 @@ def test_same_build_is_stored_once(tmp_path):
     assert again == first  # the original paste time is kept
     assert len(store.list()) == 1
     assert store.xml(first["id"]) == BUILD_XML
+
+
+def test_same_build_under_two_characters_is_kept_for_both(tmp_path):
+    store = SnapshotStore(tmp_path)
+    a, _ = store.add(BUILD_XML, SUMMARY, character="A")
+    b, created = store.add(BUILD_XML, SUMMARY, character="B")
+    assert created and a["id"] != b["id"]
+    assert [len(store.list(c)) for c in ("A", "B")] == [1, 1]
+    assert store.add(BUILD_XML, SUMMARY, character="B")[1] is False
 
 
 def test_character_defaults_to_class(tmp_path):
