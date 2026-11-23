@@ -76,12 +76,10 @@ local function matchFlags(reqFlags, notFlags, flags)
 	return true
 end
 
--- Skill flags of an actor's main skill. PoE1 PoB keeps them on mainSkill; PoE2 PoB
--- keeps them on the active effect's stat set.
+-- Skill flags of an actor's main skill, kept on the active effect's stat set.
 local function skillFlags(actor)
 	local ms = actor and actor.mainSkill
 	if not ms then return {} end
-	if ms.skillFlags then return ms.skillFlags end
 	local set = ms.activeEffect and ms.activeEffect.statSet
 	return set and set.skillFlags or {}
 end
@@ -251,7 +249,7 @@ function commands.summary()
 	for i, group in ipairs(build.skillsTab.socketGroupList) do
 		local gems = {}
 		for _, gem in ipairs(group.gemList) do
-			-- PoE1 PoB sets gem.grantedEffect; PoE2 PoB keeps it on gem.gemData.
+			-- Gem skills keep their effect on gem.gemData; item-granted skills set gem.grantedEffect.
 			local ge = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
 			table.insert(gems, {
 				name = ge and ge.name or gem.nameSpec,
@@ -263,7 +261,7 @@ function commands.summary()
 		local active = group.displaySkillList and group.displaySkillList[group.mainActiveSkill or 1]
 		local activeName = active and active.activeEffect and active.activeEffect.grantedEffect.name
 		if not activeName then
-			-- displaySkillList isn't always populated (e.g. PoE2 non-main groups): use the first active gem.
+			-- displaySkillList isn't always populated (e.g. non-main groups): use the first active gem.
 			for _, g in ipairs(gems) do
 				if not g.support and g.enabled then activeName = g.name break end
 			end
