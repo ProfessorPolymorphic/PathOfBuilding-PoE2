@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   api, type BuildSummary, type ConfigOption, type Distribution, type DistScenario, type Outcome,
 } from '../api'
+import { DAMAGE_COLORS, DAMAGE_ORDER, OUTCOME_COLORS, inkOn } from '../colors'
+import { density } from '../density'
 import { formatNumber } from '../format'
 
 // The damage distribution tab. Left: what to look at (skill, scenarios). Right: how each
@@ -10,14 +12,14 @@ import { formatNumber } from '../format'
 // is the engine's model or a sample drawn from it (api/distribution.py).
 
 const SAMPLES = 20000
-const BINS = 80
 const MAX_SCENARIOS = 6
 
 const OUTCOMES: { key: Outcome; label: string; color: string }[] = [
-  { key: 'miss', label: 'Miss', color: '#6f6a5e' },
-  { key: 'hit', label: 'Non-crit', color: '#3987e5' },
-  { key: 'crit', label: 'Crit', color: '#d95926' },
+  { key: 'miss', label: 'Miss', color: OUTCOME_COLORS.miss },
+  { key: 'hit', label: 'Non-crit', color: OUTCOME_COLORS.hit },
+  { key: 'crit', label: 'Crit', color: OUTCOME_COLORS.crit },
 ]
+const HIT_OUTCOMES = OUTCOMES.slice(1)
 const OUTCOME_LABEL = Object.fromEntries(OUTCOMES.map((o) => [o.key, o.label])) as Record<Outcome, string>
 
 interface ScenarioDef {
@@ -337,28 +339,33 @@ function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {
 function DistChart({ data, scale }: { data: Distribution; scale: 'linear' | 'sqrt' }) {
   const [ref, width] = useWidth()
 
+  // Densities only change with the data, not with width or scale.
+  const prepared = useMemo(() => {
+    const base = data.scenarios[0].summary.mean_per_attempt
+    const names = data.scenarios.map((s, i) => (i === 0 ? s.name : `${s.name} (${pctChange(s.summary.mean_per_attempt, base)})`))
+    const maxDamage = Math.max(...data.scenarios.map((s) => s.summary.max)) * 1.04
+    const curves: { scenario: string; outcome: string; x: number; y: number }[] = []
+    const misses: { scenario: string; share: number }[] = []
+    data.scenarios.forEach((s, i) => {
+      const { damage, outcome } = s.samples
+      for (const o of ['hit', 'crit'] as const) {
+        const values = damage.filter((_, j) => outcome[j] === o)
+        for (const p of density(values, damage.length, maxDamage)) curves.push({ scenario: names[i], outcome: OUTCOME_LABEL[o], ...p })
+      }
+      misses.push({ scenario: names[i], share: s.summary.share.miss ?? 0 })
+    })
+    const means = data.scenarios.map((s, i) => ({ scenario: names[i], mean: s.summary.mean_per_attempt }))
+    return { names, maxDamage, curves, misses, means }
+  }, [data])
+
   useEffect(() => {
     const el = ref.current
     if (!el || width === 0) return
-    const base = data.scenarios[0].summary.mean_per_attempt
-    const names = data.scenarios.map((s, i) => {
-      if (i === 0) return s.name
-      const d = pctChange(s.summary.mean_per_attempt, base)
-      return `${s.name} (${d})`
-    })
-    const rows: { scenario: string; damage: number; outcome: string }[] = []
-    data.scenarios.forEach((s, i) => {
-      const { damage, outcome } = s.samples
-      for (let j = 0; j < damage.length; j++) rows.push({ scenario: names[i], damage: damage[j], outcome: OUTCOME_LABEL[outcome[j]] })
-    })
-    const maxDamage = Math.max(...data.scenarios.map((s) => s.summary.max))
-    const step = maxDamage / BINS
-    const thresholds = Array.from({ length: BINS + 1 }, (_, i) => i * step)
-    const means = data.scenarios.map((s, i) => ({ scenario: names[i], mean: s.summary.mean_per_attempt }))
-
+    const { names, maxDamage, curves, misses, means } = prepared
+    const pct = (d: number) => `${Math.round(d * 1000) / 10}%`
     const chart = Plot.plot({
       width,
-      height: 60 + 165 * data.scenarios.length,
+      height: 60 + 165 * names.length,
       marginLeft: 48,
       marginRight: 12,
       marginBottom: 44,
@@ -366,19 +373,25 @@ function DistChart({ data, scale }: { data: Distribution; scale: 'linear' | 'sqr
       x: { label: 'Damage per attack →', domain: [0, maxDamage], tickFormat: (d: number) => formatNumber(d), grid: false },
       y: {
         type: scale,
-        label: '↑ Share of attacks',
-        tickFormat: (d: number) => `${Math.round(d * 1000) / 10}%`,
-        ticks: scale === 'sqrt' ? [0, 0.005, 0.02, 0.05, 0.1] : 3,
+        label: '↑ Share of attacks per 100 damage',
+        tickFormat: pct,
+        ticks: scale === 'sqrt' ? [0, 0.001, 0.005, 0.01, 0.02] : 3,
         grid: true,
       },
       fy: { axis: null, domain: names, padding: 0.3 },
-      color: { domain: OUTCOMES.map((o) => o.label), range: OUTCOMES.map((o) => o.color), legend: true },
+      color: { domain: HIT_OUTCOMES.map((o) => o.label), range: HIT_OUTCOMES.map((o) => o.color), legend: true },
       marks: [
-        Plot.rectY(rows, Plot.binX<Plot.RectYOptions>(
-          { y: 'proportion-facet' },
-          { x: 'damage', fill: 'outcome', fy: 'scenario', thresholds, insetLeft: 0.5, insetRight: 0.5, tip: true },
-        )),
+        Plot.areaY(curves, { x: 'x', y: 'y', z: 'outcome', fill: 'outcome', fy: 'scenario', fillOpacity: 0.28, curve: 'basis' }),
+        Plot.lineY(curves, {
+          x: 'x', y: 'y', z: 'outcome', stroke: 'outcome', fy: 'scenario', strokeWidth: 1.75, curve: 'basis',
+          tip: { format: { x: (d: number) => formatNumber(d), y: pct, fy: false, stroke: true, z: false } },
+        }),
         Plot.ruleY([0], { stroke: 'var(--border)' }),
+        // Misses all land on 0, a spike a density can't draw; say how many instead.
+        Plot.text(misses, {
+          fy: 'scenario', frameAnchor: 'bottom-left', dx: 4, dy: -4,
+          text: (d: { share: number }) => `Miss ${pct(d.share)}`, fill: 'var(--muted)',
+        }),
         Plot.text(names, {
           fy: (d: string) => d, text: (d: string) => d, frameAnchor: 'top-right', dy: -4,
           fill: 'var(--text)', fontWeight: 600, fontSize: 12.5,
@@ -392,44 +405,92 @@ function DistChart({ data, scale }: { data: Distribution; scale: 'linear' | 'sqr
     })
     el.replaceChildren(chart)
     return () => { el.replaceChildren() }
-  }, [data, scale, width, ref])
+  }, [prepared, scale, width, ref])
 
   return <div className="dist-chart" ref={ref} role="img" aria-label={`Damage per attack of ${data.skill}, by scenario`} />
 }
 
 // What one hit is made of: the chances, then each damage type's roll range for non-crits
-// and crits. Same outcome colours as the distribution.
+// and crits. Hue is the damage type; crits are drawn brighter than non-crits.
 function RollModel({ scenario, names, focus, onFocus }: {
   scenario: DistScenario; names: string[]; focus: number; onFocus: (i: number) => void
 }) {
   const [ref, width] = useWidth()
+  const mixRef = useRef<HTMLDivElement>(null)
   const hand = scenario.hands[0]
   const m = hand.model
+  const types = useMemo(
+    () => [...m.types].sort((a, b) => DAMAGE_ORDER.indexOf(a.type) - DAMAGE_ORDER.indexOf(b.type)),
+    [m],
+  )
 
   useEffect(() => {
     const el = ref.current
-    if (!el || width === 0) return
-    const rows = m.types.flatMap((t) => (['hit', 'crit'] as const).flatMap((side) => {
+    const mixEl = mixRef.current
+    if (!el || !mixEl || width === 0) return
+    const domain = types.map((t) => t.type)
+    const range = domain.map((t) => DAMAGE_COLORS[t] ?? OUTCOME_COLORS.hit)
+    const style = { background: 'transparent', color: 'var(--muted)', fontSize: '12px', fontFamily: 'inherit' }
+
+    // Average damage each type adds to a non-crit and to a crit: exact, from the model.
+    const mult = 1 + m.doubleDamageChance + 2 * m.tripleDamageChance
+    const mix = types.flatMap((t) => (['hit', 'crit'] as const).flatMap((side) => {
+      const r = t[side]
+      return r ? [{ type: t.type, outcome: OUTCOME_LABEL[side], value: ((r.min + r.max) / 2 + (r.lucky * (r.max - r.min)) / 6) * mult }] : []
+    }))
+    const totals = Object.fromEntries(['Non-crit', 'Crit'].map((o) => [o, mix.filter((d) => d.outcome === o).reduce((s, d) => s + d.value, 0)]))
+    const mixChart = Plot.plot({
+      width,
+      height: 110,
+      marginLeft: 96,
+      marginRight: 64,
+      marginBottom: 40,
+      style,
+      x: { label: 'Average damage by type →', tickFormat: (d: number) => formatNumber(d), grid: true, nice: true },
+      y: { label: null, domain: ['Non-crit', 'Crit'] },
+      color: { domain, range },
+      marks: [
+        Plot.barX(mix, Plot.stackX({
+          x: 'value', y: 'outcome', fill: 'type', order: domain, insetLeft: 1, insetRight: 1, insetTop: 3, insetBottom: 3,
+          channels: { Type: 'type', Average: 'value' },
+          tip: { format: { x: false, y: true, fill: false, Type: true, Average: (d: number) => formatNumber(d) } },
+        })),
+        // Only label segments wide enough to hold the name, in ink that reads on that fill.
+        ...['#17150f', '#f3ead6'].map((ink) => Plot.text(mix, Plot.stackX({
+          x: 'value', y: 'outcome', z: 'type', order: domain, fill: ink, fontWeight: 600,
+          text: (d: { type: string; value: number; outcome: string }) =>
+            d.value / totals[d.outcome] > 0.17 && inkOn(d.type) === ink ? d.type : '',
+        }))),
+        Plot.text(Object.entries(totals), {
+          x: ([, v]: [string, number]) => v, y: ([o]: [string, number]) => o, dx: 6, textAnchor: 'start',
+          text: ([, v]: [string, number]) => formatNumber(v), fill: 'var(--text)',
+        }),
+      ],
+    })
+
+    const rows = types.flatMap((t) => (['hit', 'crit'] as const).flatMap((side) => {
       const r = t[side]
       return r ? [{ type: t.type, outcome: OUTCOME_LABEL[side], min: r.min, max: r.max, lucky: r.lucky }] : []
     }))
     const chart = Plot.plot({
       width,
-      height: 40 + 54 * m.types.length,
+      height: 40 + 54 * types.length,
       marginLeft: 96,
       marginRight: 64,
       marginBottom: 44,
-      style: { background: 'transparent', color: 'var(--muted)', fontSize: '12px', fontFamily: 'inherit' },
+      style,
       x: { label: 'Damage roll range (after enemy mitigation) →', tickFormat: (d: number) => formatNumber(d), grid: true, nice: true },
       // One panel per damage type, a lane each for non-crits and crits, so ranges never overlap.
-      fy: { label: null, domain: m.types.map((t) => t.type), padding: 0.15 },
+      fy: { label: null, domain, padding: 0.15 },
       y: { axis: null, domain: ['Non-crit', 'Crit'] },
-      color: { domain: ['Non-crit', 'Crit'], range: [OUTCOMES[1].color, OUTCOMES[2].color] },
+      color: { domain, range },
       marks: [
         Plot.barX(rows, {
-          x1: 'min', x2: 'max', y: 'outcome', fy: 'type', fill: 'outcome', insetTop: 2, insetBottom: 2, rx: 3,
-          channels: { Min: 'min', Max: 'max' },
-          tip: { format: { x1: false, x2: false, y: true, fy: true, fill: false, Min: (d: number) => formatNumber(d), Max: (d: number) => formatNumber(d) } },
+          x1: 'min', x2: 'max', y: 'outcome', fy: 'type', fill: 'type', insetTop: 2, insetBottom: 2, rx: 3,
+          // Crits full strength, non-crits dimmer: brightness means outcome, as in the distribution.
+          fillOpacity: (d: { outcome: string }) => (d.outcome === 'Crit' ? 1 : 0.55),
+          channels: { Min: 'min', Max: 'max', Outcome: 'outcome' },
+          tip: { format: { x1: false, x2: false, y: false, fy: true, fill: false, Outcome: true, Min: (d: number) => formatNumber(d), Max: (d: number) => formatNumber(d) } },
         }),
         Plot.text(rows, {
           x: 'max', y: 'outcome', fy: 'type', text: 'outcome', textAnchor: 'start', dx: 6,
@@ -437,9 +498,10 @@ function RollModel({ scenario, names, focus, onFocus }: {
         }),
       ],
     })
+    mixEl.replaceChildren(mixChart)
     el.replaceChildren(chart)
-    return () => { el.replaceChildren() }
-  }, [m, width, ref])
+    return () => { el.replaceChildren(); mixEl.replaceChildren() }
+  }, [m, types, width, ref])
 
   return (
     <section className="dist-block" aria-labelledby="dist-rolls">
@@ -459,6 +521,7 @@ function RollModel({ scenario, names, focus, onFocus }: {
         <li><span>Triple damage</span><strong>{formatNumber(m.tripleDamageChance * 100)}%</strong></li>
         {scenario.hands.length > 1 && <li><span>Hands</span><strong>{scenario.hands.map((h) => h.hand).join(' / ')}, alternating</strong></li>}
       </ul>
+      <div className="dist-chart compact" ref={mixRef} role="img" aria-label="Average damage by type, for a non-crit and a crit" />
       <div className="dist-chart compact" ref={ref} role="img" aria-label="Damage roll range by type, non-crit and crit" />
       <div className="table-scroll">
         <table className="dist-compare">
@@ -466,9 +529,9 @@ function RollModel({ scenario, names, focus, onFocus }: {
             <tr><th>Type</th><th>Non-crit roll</th><th>Crit roll</th><th>Lucky</th><th>Enemy mitigation</th></tr>
           </thead>
           <tbody>
-            {m.types.map((t) => (
+            {types.map((t) => (
               <tr key={t.type}>
-                <th scope="row">{t.type}</th>
+                <th scope="row"><span className="type-key" style={{ background: DAMAGE_COLORS[t.type] }} aria-hidden="true" />{t.type}</th>
                 <td>{t.hit ? `${formatNumber(t.hit.min)} – ${formatNumber(t.hit.max)}` : '—'}</td>
                 <td>{t.crit ? `${formatNumber(t.crit.min)} – ${formatNumber(t.crit.max)}` : '—'}</td>
                 <td>{t.hit && t.hit.lucky > 0 ? `${formatNumber(t.hit.lucky * 100)}%` : '—'}</td>

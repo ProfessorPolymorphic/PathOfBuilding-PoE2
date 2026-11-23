@@ -10,11 +10,15 @@
   --good: #7fbf6a;
   --bad: #e0705a;
   --warn: #d9b25a;
-  --fire: #e07a4f;
-  --cold: #6fb3e0;
-  --lightning: #e6cf5c;
-  --chaos: #b57fd6;
-  --physical: #c9bfa9;
+  /* Damage types and outcomes; mirrored in src/colors.ts for charts. */
+  --fire: #f9601f;
+  --cold: #37b4dc;
+  --lightning: #f4ce23;
+  --chaos: #b151e3;
+  --physical: #70675d;
+  --miss: #4a463d;
+  --noncrit: #9d9482;
+  --crit: #f3ead6;
   --radius: 10px;
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
@@ -462,3 +466,4 @@ button.icon:hover:not(:disabled) { color: var(--bad); filter: none; }
   .workspace { grid-template-columns: 1fr; padding: 0.75rem 1rem; }
   .chat { position: static; height: 75vh; }
 }
+.type-key { display: inline-block; width: 0.7em; height: 0.7em; border-radius: 2px; margin-right: 0.45em; vertical-align: baseline; }
