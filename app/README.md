@@ -65,6 +65,14 @@ GET /builds/{id}/dashboard[?download=true] baseline card + every notable/keyston
 The dashboard response is cached per build until the build changes (the first request
 takes about 4s). `?download=true` returns it as a file, for sketching views in Observable.
 
+### Weak spots
+
+`GET /builds/{id}/weak-spots[?download=true]`: max hit taken by damage type, the life + ES pool
+each type lands on, resistances against their caps, and for each resistance below its cap the
+max hit if it were capped (`weak_spots` in `engine/worker.lua` adds the missing resistance on a
+cached environment, so the build isn't changed). No outside thresholds: each type is read
+against the build's strongest, and the weakest is flagged. Shown on the Dashboard.
+
 ## Hit distributions
 
 PoB reports one average per hit. `hit_distribution` in `engine/worker.lua` recovers the random
@@ -158,7 +166,7 @@ app/engine/test.sh                      # upstream PoB busted suite (~60s)
 
 ## Engine notes
 
-- **Worker protocol** (`engine/worker.lua`): one JSON request per line on stdin, one response per line on stdout. PoB logs go to stderr. Commands: `load_xml`, `summary`, `stats`, `export_xml`, `item_details`, `search_nodes`, `rank_nodes`, `compare_nodes`, `apply_nodes`, `compare_item`, `equip_item`, `list_config`, `set_config`, `set_main_skill`, `hit_distribution`, `hit_sweep`, `sweep_current`, `benchmark`.
+- **Worker protocol** (`engine/worker.lua`): one JSON request per line on stdin, one response per line on stdout. PoB logs go to stderr. Commands: `load_xml`, `summary`, `stats`, `export_xml`, `item_details`, `search_nodes`, `rank_nodes`, `compare_nodes`, `apply_nodes`, `compare_item`, `equip_item`, `list_config`, `set_config`, `set_main_skill`, `hit_distribution`, `hit_sweep`, `sweep_current`, `weak_spots`, `benchmark`.
 - `compare_*` commands are what-ifs computed with PoB's own misc calculator (the one behind its tooltips); they don't modify the build. `apply_*`/`equip_*`/`set_*` do.
 - Share codes are decoded in Python (`api/buildcode.py`) because headless PoB stubs out `Inflate`/`Deflate`.
 - One worker holds one build, boots in ~1.3s, loads a build in ~1.3s, uses ~400 MB, and evaluates a single what-if in ~24 ms. The API caps running workers (`POB_MAX_WORKERS`, default 4) and parks the least recently used ones; a parked build reloads from its XML snapshot on next use. A crashed worker is restarted the same way.

@@ -396,3 +396,29 @@ def test_sweep_rejects_unknown_defence_and_non_hits(client, build):
     r = client.post(f"/builds/{bid}/sweep", json={"skill": "Purity of Fire", "defence": "enemyArmour", "steps": 3})
     assert r.status_code == 422 and "doesn't deal hit damage" in r.json()["detail"]
     assert {d["var"] for d in client.get("/defences").json()} >= {"enemyArmour", "enemyEvasion", "enemyFireResist"}
+
+
+def test_weak_spots(client, build):
+    """Max hit by type straight from the engine; capping a resistance only ever helps, and
+    asking doesn't change the build."""
+    bid = build["build_id"]
+    keys = ["PhysicalMaximumHitTaken", "ColdMaximumHitTaken", "ColdResist", "TotalEHP"]
+    before = client.get(f"/builds/{bid}/stats", params={"keys": keys}).json()
+    r = client.get(f"/builds/{bid}/weak-spots")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    by = {t["type"]: t for t in data["types"]}
+    assert list(by) == ["Physical", "Fire", "Cold", "Lightning", "Chaos"]
+    assert by["Physical"]["maxHit"] == before["PhysicalMaximumHitTaken"]
+    assert by["Cold"]["maxHit"] == before["ColdMaximumHitTaken"]
+    assert by["Cold"]["resist"] == before["ColdResist"]
+    assert data["weakest"] == min(data["types"], key=lambda t: t["maxHit"])["type"]
+    assert sum(t["weakest"] for t in data["types"]) == 1
+    for t in data["types"]:
+        if t["uncapped"]:
+            assert t["cappedMaxHit"] > t["maxHit"] and t["gainIfCapped"] > 0
+        else:
+            assert "cappedMaxHit" not in t
+    assert client.get(f"/builds/{bid}/stats", params={"keys": keys}).json() == before
+    dl = client.get(f"/builds/{bid}/weak-spots", params={"download": True})
+    assert "attachment" in dl.headers["content-disposition"]

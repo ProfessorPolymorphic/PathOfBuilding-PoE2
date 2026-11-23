@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { WeakSpots } from './WeakSpots'
 import { api, ApiError, type BuildSummary, type Card, type Dashboard as DashboardData, type NodeCandidate } from '../api'
 import { BuildDetails } from './BuildDetails'
 import { ChangeCard } from './ChangeCard'
@@ -70,6 +71,7 @@ export function Dashboard({ buildId, build, onBuildLost }: Props) {
         ) : (
           <div className="change-card placeholder" aria-busy>{error ? <p className="error">{error}</p> : <p className="muted">Testing your build…</p>}</div>
         )}
+        <WeakSpots buildId={buildId} build={build} />
         <details className="panel dash-details">
           <summary><h3>All stats, skills and gear</h3></summary>
           <div className="dash-details-body">

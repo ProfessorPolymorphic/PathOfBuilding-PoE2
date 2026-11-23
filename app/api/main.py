@@ -439,6 +439,34 @@ async def hit_sweep(build_id: str, body: SweepRequest):
             "current": current, "lo": lo, "hi": hi, "samples": body.samples, **grid}
 
 
+def weak_spot_flags(data: dict) -> dict:
+    """Relative reading of max hit by type: no outside thresholds, only the build against itself.
+    Each type gets its share of the strongest type's max hit; the weakest is flagged, and so is
+    every resistance below its cap (with the exact max hit if it were capped)."""
+    types = [t for t in data["types"] if t.get("maxHit")]
+    best = max((t["maxHit"] for t in types), default=0) or 1
+    weakest = min(types, key=lambda t: t["maxHit"])["type"] if types else None
+    for t in data["types"]:
+        hit = t.get("maxHit") or 0
+        t["shareOfBest"] = hit / best
+        t["weakest"] = t["type"] == weakest
+        t["uncapped"] = bool(t.get("missing"))
+        if t.get("cappedMaxHit") is not None:
+            t["gainIfCapped"] = t["cappedMaxHit"] - hit
+    data["weakest"] = weakest
+    return data
+
+
+@app.get("/builds/{build_id}/weak-spots")
+async def weak_spots(build_id: str, download: bool = False):
+    """Max hit by damage type, the pool and resistances behind it, which type is weakest, and
+    for every uncapped resistance the max hit if it were capped (computed by the engine)."""
+    data = weak_spot_flags(await sessions.call(sessions.get(build_id), "weak_spots"))
+    if download:
+        return JSONResponse(data, headers={"Content-Disposition": f'attachment; filename="weak-spots-{build_id}.json"'})
+    return data
+
+
 @app.put("/builds/{build_id}/main-skill")
 async def set_main_skill(build_id: str, body: MainSkill):
     return await sessions.call(sessions.get(build_id), "set_main_skill", index=body.index)

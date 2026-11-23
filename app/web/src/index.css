@@ -489,3 +489,14 @@ button.icon:hover:not(:disabled) { color: var(--bad); filter: none; }
 .dm-row { display: flex; }
 .dm-main { flex: 1; min-width: 0; }
 .dm-legend { min-height: 50px; }
+
+/* Weak spots (dashboard) */
+.weak-spots { padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+.weak-lead { margin: 0; font-size: 0.88rem; }
+.weak-lead strong { font-variant-numeric: tabular-nums; }
+.bad { color: var(--bad); }
+.weak-res { width: 100%; border-collapse: collapse; font-size: 0.82rem; font-variant-numeric: tabular-nums; }
+.weak-res th, .weak-res td { padding: 0.2rem 0.3rem; text-align: right; border-bottom: 1px solid var(--border); }
+.weak-res th:first-child { text-align: left; font-weight: 500; }
+.weak-res thead th { color: var(--muted); font-weight: 500; font-size: 0.75rem; }
+.weak-res tr:last-child th, .weak-res tr:last-child td { border-bottom: none; }

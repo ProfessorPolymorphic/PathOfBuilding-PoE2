@@ -155,6 +155,33 @@ export interface Distribution {
   scenarios: DistScenario[]
 }
 
+export interface WeakSpotType {
+  type: string
+  maxHit: number
+  pool: number
+  takenHitMult: number
+  damageReduction?: number
+  resist?: number
+  resistTotal?: number
+  resistMax?: number
+  missing?: number
+  overCap?: number
+  cappedMaxHit?: number
+  gainIfCapped?: number
+  shareOfBest: number
+  weakest: boolean
+  uncapped: boolean
+}
+
+export interface WeakSpots {
+  types: WeakSpotType[]
+  weakest: string | null
+  life: number
+  energyShield: number
+  ward: number
+  totalEHP: number
+}
+
 export interface Defence {
   var: string
   label: string
@@ -306,6 +333,8 @@ export const api = {
   dashboardDownloadUrl: (id: string) => `/builds/${id}/dashboard?download=true`,
   distribution: (id: string, body: { skill: string | number; scenarios: ScenarioRequest[]; samples?: number; by_type?: boolean }) =>
     request<Distribution>('POST', `/builds/${id}/distribution`, body),
+  weakSpots: (id: string) => request<WeakSpots>('GET', `/builds/${id}/weak-spots`),
+  weakSpotsDownloadUrl: (id: string) => `/builds/${id}/weak-spots?download=true`,
   defences: () => request<Defence[]>('GET', '/defences'),
   sweep: (id: string, body: { skill: string; defence: string; lo?: number; hi?: number; steps?: number; samples?: number; bins?: number }) =>
     request<Sweep>('POST', `/builds/${id}/sweep`, body),

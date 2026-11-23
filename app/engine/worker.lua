@@ -849,6 +849,53 @@ function commands.hit_distribution(args)
 	return result
 end
 
+-- Weak spots: max hit by damage type with the numbers behind it, and for each resistance
+-- below its cap, the max hit if it were capped (exact: the cap added as a mod on a cached
+-- environment, like the misc calculator, so the build isn't changed).
+local WEAK_TYPES = { "Physical", "Fire", "Cold", "Lightning", "Chaos" }
+
+function commands.weak_spots()
+	requireBuild()
+	local out = build.calcsTab.mainOutput
+	local calcs = build.calcsTab.calcs
+	local types = {}
+	local _, cachedPlayerDB, cachedEnemyDB, cachedMinionDB = calcs.initEnv(build, "CALCULATOR")
+	local function withMod(name, value)
+		local env = calcs.initEnv(build, "CALCULATOR", {}, {
+			cachedPlayerDB = cachedPlayerDB, cachedEnemyDB = cachedEnemyDB, cachedMinionDB = cachedMinionDB })
+		env.modDB:NewMod(name, "BASE", value, "WeakSpots")
+		calcs.perform(env)
+		return env.player.output
+	end
+	for _, t in ipairs(WEAK_TYPES) do
+		local entry = {
+			type = t,
+			maxHit = num(out[t .. "MaximumHitTaken"]),
+			pool = num(out[t .. "TotalPool"]),
+			takenHitMult = num(out[t .. "TakenHitMult"]),
+			damageReduction = num(out[t .. "DamageReduction"]),
+		}
+		if t ~= "Physical" then
+			local resist, missing = num(out[t .. "Resist"]), num(out["Missing" .. t .. "Resist"])
+			entry.resist = resist
+			entry.resistTotal = num(out[t .. "ResistTotal"])
+			entry.resistMax = resist and missing and (resist + missing)
+			entry.missing = missing
+			entry.overCap = num(out[t .. "ResistOverCap"])
+			if missing and missing > 0 then
+				local capped = withMod(t .. "Resist", missing)
+				entry.cappedMaxHit = num(capped[t .. "MaximumHitTaken"])
+			end
+		end
+		table.insert(types, entry)
+	end
+	return {
+		types = types,
+		life = num(out.Life), energyShield = num(out.EnergyShield), ward = num(out.Ward),
+		totalEHP = num(out.TotalEHP),
+	}
+end
+
 -- Real PoE2 gem text from PoB's data. args: { name = "Shred" }
 function commands.describe_skill(args)
 	local want = tostring(args.name or ""):lower()
