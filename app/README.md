@@ -65,6 +65,12 @@ GET /builds/{id}/dashboard[?download=true] baseline card + every notable/keyston
 The dashboard response is cached per build until the build changes (the first request
 takes about 4s). `?download=true` returns it as a file, for sketching views in Observable.
 
+Above the card columns, a scatter puts every tested passive at its DPS change against a chosen
+defence change (effective HP, lowest max hit, max hit by type, life, energy shield), in total
+or per point spent. Passives that change only one side sit in a strip along that axis, far
+outliers are pinned at the edge and listed, and the passives no other beats on both axes are
+highlighted. Hovering shows a passive's card; clicking keeps it.
+
 ### Weak spots
 
 `GET /builds/{id}/weak-spots[?download=true]`: max hit taken by damage type, the life + ES pool

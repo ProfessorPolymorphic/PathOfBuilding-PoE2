@@ -28,6 +28,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 import buildcode
+import crafting
 import distribution
 import settings
 import snapshots
@@ -528,6 +529,23 @@ async def item_details(build_id: str, slot: str | None = None):
 @app.post("/builds/{build_id}/items/compare")
 async def compare_item(build_id: str, body: ItemChange):
     return await sessions.call(sessions.get(build_id), "compare_item", slot=body.slot, item=body.item)
+
+
+class RankAffixes(BaseModel):
+    slot: str
+    stat: str = Field("DPS", description="Output key to rank by; DPS = the main skill's total")
+    also: list[str] | None = None
+    roll: float = Field(0.5, ge=0, le=1, description="Where in each mod's range to evaluate")
+    limit: int = Field(15, ge=1, le=100)
+    replace: str | None = Field(None, description="Group or mod id of a current affix to replace")
+
+
+@app.post("/builds/{build_id}/items/affixes")
+async def rank_affixes(build_id: str, body: RankAffixes):
+    """The item's affixes, and what each mod that could fill an open (or replaced) slot is
+    worth to the build, with the currency routes to get it."""
+    args = {k: v for k, v in body.model_dump().items() if v not in (None, "", [])}
+    return crafting.plan(await sessions.call(sessions.get(build_id), "rank_affixes", **args))
 
 
 @app.post("/builds/{build_id}/items/equip")

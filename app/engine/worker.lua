@@ -982,6 +982,356 @@ function commands.compare_item(args)
 	}
 end
 
+---------------------------------------------------------------------------
+-- Crafting: which affixes an equipped item has, which it could still roll, and what
+-- each would be worth. PoB's mod pool (Data/ModItem.lua) says what can roll where;
+-- what each currency does lives in app/api/crafting_rules.py.
+---------------------------------------------------------------------------
+
+local RANGE_PATTERN = "%((%-?[%d%.]+)%-(%-?[%d%.]+)%)"
+
+-- Lua pattern for one mod template line ("+(5-8) to Strength"), plus its value ranges.
+local templateCache = {}
+local function compileTemplate(text)
+	local cached = templateCache[text]
+	if cached then return cached end
+	local lower = text:lower()
+	local parts, ranges, pos = { "^" }, {}, 1
+	while true do
+		local s, e, lo, hi = lower:find(RANGE_PATTERN, pos)
+		local literal = lower:sub(pos, (s or 0) - 1)
+		if not s then literal = lower:sub(pos) end
+		table.insert(parts, (literal:gsub("[%^%$%(%)%%%.%[%]%*%+%-%?]", "%%%0")))
+		if not s then break end
+		table.insert(parts, "(%-?[%d%.]+)")
+		lo, hi = tonumber(lo), tonumber(hi)
+		table.insert(ranges, { math.min(lo, hi), math.max(lo, hi) })
+		pos = e + 1
+	end
+	table.insert(parts, "$")
+	cached = { pattern = table.concat(parts), ranges = ranges }
+	templateCache[text] = cached
+	return cached
+end
+
+local function lineMatches(template, line)
+	local t = compileTemplate(template)
+	local values = { line:lower():match(t.pattern) }
+	if #t.ranges == 0 then return line:lower():match(t.pattern) ~= nil end
+	if #values ~= #t.ranges then return false end
+	for i, r in ipairs(t.ranges) do
+		local v = math.abs(tonumber(values[i]) or 1e18)
+		local lo, hi = math.abs(r[1]), math.abs(r[2])
+		if v < math.min(lo, hi) - 1e-6 or v > math.max(lo, hi) + 1e-6 then return false end
+	end
+	return true
+end
+
+local function modText(mod)
+	local t = {}
+	for _, line in ipairs(mod) do table.insert(t, line) end
+	return table.concat(t, " / ")
+end
+
+-- Explicit mod lines of an item, as the text the game shows.
+local function explicitLines(item)
+	local out = {}
+	for i, modLine in ipairs(item.explicitModLines) do
+		local text = cleanText(modLine.line)
+		if text:find(RANGE_PATTERN) then text = itemLib.applyRange(text, modLine.range or 0.5) end
+		table.insert(out, { index = i, text = text, fractured = modLine.fractured or nil,
+			desecrated = modLine.desecrated or nil, custom = modLine.custom or nil })
+	end
+	return out
+end
+
+-- Every way one mod could account for some of the item's lines: { mod, id, lines = {idx...} }.
+local function modOptions(mod, lines)
+	local results = {}
+	local function assign(k, used, picked)
+		if k > #mod then
+			local copy = {}
+			for i, v in ipairs(picked) do copy[i] = v end
+			table.insert(results, copy)
+			return
+		end
+		for _, l in ipairs(lines) do
+			if not used[l.index] and lineMatches(mod[k], l.text) then
+				used[l.index] = true
+				picked[k] = l.index
+				assign(k + 1, used, picked)
+				used[l.index] = nil
+				picked[k] = nil
+			end
+		end
+	end
+	assign(1, {}, {})
+	return results
+end
+
+-- Match an item's explicit lines to the affixes that produced them. Exact cover search:
+-- fewest affixes, eligible mods preferred over ones this base can't roll, unmatched
+-- lines allowed but costly. Lines are few (<= ~8), so the search is small.
+local function identifyAffixes(item, limits)
+	local lines = {}
+	for _, l in ipairs(explicitLines(item)) do
+		if not l.custom then table.insert(lines, l) end
+	end
+	local options = {}
+	for id, mod in pairs(item.affixes or {}) do
+		if (mod.type == "Prefix" or mod.type == "Suffix") and #mod > 0 and #mod <= #lines then
+			local eligible = item:GetModSpawnWeight(mod) > 0
+			for _, idxs in ipairs(modOptions(mod, lines)) do
+				table.insert(options, { id = id, mod = mod, lines = idxs, cost = 1 + (eligible and 0 or 0.5) })
+			end
+		end
+	end
+	local byLine = {}
+	for _, o in ipairs(options) do
+		for _, idx in ipairs(o.lines) do
+			byLine[idx] = byLine[idx] or {}
+			table.insert(byLine[idx], o)
+		end
+	end
+	local best, bestCost = nil, math.huge
+	local covered, chosen, groups = {}, {}, {}
+	local count = { Prefix = 0, Suffix = 0 }
+	local function search(cost)
+		if cost >= bestCost then return end
+		local line
+		for _, l in ipairs(lines) do
+			if not covered[l.index] then line = l break end
+		end
+		if not line then
+			bestCost = cost
+			best = {}
+			for i, c in ipairs(chosen) do best[i] = c end
+			return
+		end
+		for _, o in ipairs(byLine[line.index] or {}) do
+			local free = not groups[o.mod.group] and count[o.mod.type] < limits[o.mod.type]
+			for _, idx in ipairs(o.lines) do free = free and not covered[idx] end
+			if free then
+				for _, idx in ipairs(o.lines) do covered[idx] = true end
+				groups[o.mod.group] = true
+				count[o.mod.type] = count[o.mod.type] + 1
+				table.insert(chosen, o)
+				search(cost + o.cost)
+				table.remove(chosen)
+				count[o.mod.type] = count[o.mod.type] - 1
+				groups[o.mod.group] = nil
+				for _, idx in ipairs(o.lines) do covered[idx] = nil end
+			end
+		end
+		covered[line.index] = true
+		table.insert(chosen, { unknown = line.index })
+		search(cost + 10)
+		table.remove(chosen)
+		covered[line.index] = nil
+	end
+	search(0)
+	return best or {}, lines
+end
+
+-- Eligible tiers of each mod group for this item, highest level first.
+local function groupTiers(item)
+	local tiers = {}
+	for id, mod in pairs(item.affixes or {}) do
+		if (mod.type == "Prefix" or mod.type == "Suffix") and item:GetModSpawnWeight(mod) > 0 then
+			tiers[mod.group] = tiers[mod.group] or {}
+			table.insert(tiers[mod.group], { id = id, mod = mod })
+		end
+	end
+	for _, list in pairs(tiers) do
+		table.sort(list, function(a, b) return a.mod.level > b.mod.level end)
+	end
+	return tiers
+end
+
+local function tierOf(tiers, id, mod)
+	for i, t in ipairs(tiers[mod.group] or {}) do
+		if t.id == id then return i end
+	end
+	return nil
+end
+
+-- Item copy with some explicit lines removed and some mod templates added.
+local function editedItem(item, removeIdx, addMod, roll)
+	local copy = parseItem(item:BuildRaw())
+	local keep = {}
+	for i, modLine in ipairs(copy.explicitModLines) do
+		if not (removeIdx and removeIdx[i]) then table.insert(keep, modLine) end
+	end
+	copy.explicitModLines = keep
+	for _, line in ipairs(addMod or {}) do
+		table.insert(copy.explicitModLines, { line = line, range = roll, modTags = {} })
+	end
+	copy:BuildAndParseRaw()
+	return copy
+end
+
+local function essencesFor(item, id, mod)
+	local out = {}
+	for _, ess in pairs(data.essences or {}) do
+		local forced = ess.mods and ess.mods[item.type]
+		local forcedMod = forced and item.affixes[forced]
+		if forced == id or (forcedMod and forcedMod.group == mod.group) then
+			table.insert(out, { name = ess.name, mod = forced, level = forcedMod and forcedMod.level or nil,
+				text = forcedMod and modText(forcedMod) or nil })
+		end
+	end
+	table.sort(out, function(a, b) return (a.level or 0) > (b.level or 0) end)
+	return out
+end
+
+-- args: { slot = "Gloves", stat = "DPS", also = {"Life", "TotalEHP"}, roll = 0.5, limit = 15,
+--         replace = "<group or mod id of a current affix>" (rank mods for its slot instead) }
+-- Returns the item's identified affixes (with what removing each costs), every mod group
+-- that could fill an open prefix or suffix at its best tier for the item level (with the
+-- stat change), the full open pool for odds, and which essences force each mod.
+function commands.rank_affixes(args)
+	requireBuild()
+	local slot = requireSlot(args.slot)
+	local item = build.itemsTab.items[slot.selItemId]
+	if not item then error("slot '" .. slot.slotName .. "' is empty", 0) end
+	if item.rarity == "UNIQUE" or item.rarity == "RELIC" then
+		error("'" .. item.name .. "' is unique; its mods can't be crafted", 0)
+	end
+	if not item.affixes then error("no affix data for this item type", 0) end
+	local roll = tonumber(args.roll) or 0.5
+	local also = args.also or { "Life", "EnergyShield", "TotalEHP" }
+	local limits = item.rarity == "MAGIC" and { Prefix = 1, Suffix = 1 } or { Prefix = 3, Suffix = 3 }
+	local ilvl = item.itemLevel
+
+	local calcFunc, base = build.calcsTab:GetMiscCalculator()
+	local stat = args.stat or "DPS"
+	if stat == "DPS" then stat = dpsKey(base) end
+	if type(base[stat]) ~= "number" then error("stat '" .. stat .. "' is not a numeric output", 0) end
+	local function measure(candidate)
+		local out = calcFunc({ repSlotName = slot.slotName, repItem = candidate }, true)
+		local extra = {}
+		for _, k in ipairs(also) do
+			if type(base[k]) == "number" and type(out[k]) == "number" and math.abs(out[k] - base[k]) > 0.001 then
+				extra[k] = num(out[k] - base[k])
+			end
+		end
+		local d = (out[stat] or 0) - base[stat]
+		return num(d), base[stat] ~= 0 and num(d / math.abs(base[stat]) * 100) or nil,
+			next(extra) and extra or nil
+	end
+
+	local tiers = groupTiers(item)
+	local chosen, lines = identifyAffixes(item, limits)
+	local lineText = {}
+	for _, l in ipairs(lines) do lineText[l.index] = l end
+	local used = { Prefix = 0, Suffix = 0 }
+	local usedGroups = {}
+	local current, entryLines = {}, {}
+	for _, c in ipairs(chosen) do
+		local entry
+		if c.unknown then
+			local l = lineText[c.unknown]
+			entry = { side = "unknown", lines = { l.text }, fractured = l.fractured, desecrated = l.desecrated }
+			c.lines = { c.unknown }
+		else
+			used[c.mod.type] = used[c.mod.type] + 1
+			usedGroups[c.mod.group] = true
+			local texts, fractured = {}, nil
+			for _, idx in ipairs(c.lines) do
+				table.insert(texts, lineText[idx].text)
+				fractured = fractured or lineText[idx].fractured
+			end
+			entry = {
+				side = c.mod.type:lower(), group = c.mod.group, mod = c.id, affix = c.mod.affix,
+				level = c.mod.level, tier = tierOf(tiers, c.id, c.mod),
+				tiers = tiers[c.mod.group] and #tiers[c.mod.group] or nil,
+				eligible = tiers[c.mod.group] ~= nil and tierOf(tiers, c.id, c.mod) ~= nil,
+				lines = texts, fractured = fractured,
+			}
+			local best = tiers[c.mod.group] and tiers[c.mod.group][1]
+			if best and ilvl then
+				for _, t in ipairs(tiers[c.mod.group]) do
+					if t.mod.level <= ilvl then best = t break end
+				end
+			end
+			if best and best.id ~= c.id and best.mod.level > c.mod.level then
+				entry.bestTier = { mod = best.id, level = best.mod.level, text = modText(best.mod) }
+			end
+		end
+		local remove = {}
+		for _, idx in ipairs(c.lines) do remove[idx] = true end
+		entry.removeDelta, entry.removePct, entry.removeOther = measure(editedItem(item, remove, nil, roll))
+		table.insert(current, entry)
+		entryLines[entry] = remove
+	end
+
+	-- Open pool: every eligible tier on a side with room, in a group the item doesn't have.
+	-- A line we couldn't identify still holds a slot, on a side we don't know, so a side
+	-- only certainly has room if it has more open slots than there are unknown lines.
+	local open = { Prefix = limits.Prefix - used.Prefix, Suffix = limits.Suffix - used.Suffix }
+	local unknown = 0
+	for _, c in ipairs(current) do
+		if c.side == "unknown" then unknown = unknown + 1 end
+	end
+	-- Replacing an affix: take it off, free its slot and group, and rank what could go there.
+	local replacing, removeFirst
+	if args.replace then
+		for _, c in ipairs(current) do
+			if c.group and (c.group == args.replace or c.mod == args.replace) then replacing = c end
+		end
+		if not replacing then
+			error("no identified affix '" .. tostring(args.replace) .. "' on this item; use a group or mod id from current", 0)
+		end
+		local side = replacing.side == "prefix" and "Prefix" or "Suffix"
+		open[side] = open[side] + 1
+		usedGroups[replacing.group] = nil
+		removeFirst = entryLines[replacing]
+	end
+	local pool, candidates = {}, {}
+	for group, list in pairs(tiers) do
+		local side = list[1].mod.type
+		local wanted = not replacing or side:lower() == replacing.side
+		if not usedGroups[group] and open[side] > 0 and wanted then
+			local levels, top = {}, nil
+			for _, t in ipairs(list) do
+				if not ilvl or t.mod.level <= ilvl then
+					table.insert(levels, t.mod.level)
+					top = top or t
+				end
+			end
+			if top then
+				table.insert(pool, { side = side:lower(), group = group, levels = levels })
+				table.insert(candidates, { group = group, top = top, side = side, tierCount = #levels })
+			end
+		end
+	end
+
+	local results = {}
+	for _, c in ipairs(candidates) do
+		local d, pct, extra = measure(editedItem(item, removeFirst, c.top.mod, roll))
+		table.insert(results, {
+			side = c.side:lower(), group = c.group, mod = c.top.id, affix = c.top.mod.affix,
+			level = c.top.mod.level, text = modText(c.top.mod), tiers = c.tierCount,
+			tags = c.top.mod.modTags, delta = d, pct = pct, otherDeltas = extra,
+			slotUncertain = open[c.side] <= unknown or nil,
+			essences = essencesFor(item, c.top.id, c.top.mod),
+		})
+	end
+	table.sort(results, function(a, b) return (tonumber(a.delta) or 0) > (tonumber(b.delta) or 0) end)
+	local top = {}
+	for i = 1, math.min(#results, tonumber(args.limit) or 15) do top[i] = results[i] end
+
+	return {
+		slot = slot.slotName, item = item.name, base = item.baseName, itemType = item.type,
+		rarity = item.rarity:lower(), itemLevel = ilvl, corrupted = item.corrupted or false,
+		mirrored = item.mirrored or false,
+		stat = stat, baseline = num(base[stat]), roll = roll,
+		limits = { prefix = limits.Prefix, suffix = limits.Suffix },
+		open = { prefix = open.Prefix, suffix = open.Suffix }, unidentified = unknown,
+		current = current, replacing = replacing, candidates = top, evaluated = #results, pool = pool,
+	}
+end
+
 -- What-if: allocate and/or deallocate passive nodes without changing the build.
 -- Adding a node also adds the shortest path to it; removing a node also removes
 -- everything that depends on it (exactly what the in-game tree would do).

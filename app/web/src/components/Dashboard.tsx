@@ -3,11 +3,13 @@ import { WeakSpots } from './WeakSpots'
 import { api, ApiError, type BuildSummary, type Card, type Dashboard as DashboardData, type NodeCandidate } from '../api'
 import { BuildDetails } from './BuildDetails'
 import { ChangeCard } from './ChangeCard'
+import { NodeCard } from './NodeCard'
+import { NodeScatter } from './NodeScatter'
 import { StatPanel } from './StatPanel'
 
 // What pasting a build code fills in: the build's core stats, then the best reachable
-// passives by damage and by defence, each as a change preview card. More views (weak spots,
-// the damage/defence scatter, support gems, pathing, progress) slot in as sections here.
+// passives by damage and by defence: a scatter of all of them, then the top few as change
+// preview cards. More views (support gems, pathing, progress) slot in as sections here.
 
 const TOP_N = 3
 
@@ -93,6 +95,7 @@ export function Dashboard({ buildId, build, onBuildLost }: Props) {
           )}
         </header>
         {!data && !error && <p className="muted"><span className="spinner inline" aria-hidden /> Testing reachable passives in the engine…</p>}
+        {data && <NodeScatter nodes={nodes} />}
         {data && (
           <div className="dash-columns">
             <NodeColumn title="Most damage" nodes={byDamage} empty="No reachable passive adds damage." />
@@ -110,20 +113,7 @@ function NodeColumn({ title, nodes, empty }: { title: string; nodes: NodeCandida
       <h3>{title}</h3>
       {nodes.length === 0 && <p className="muted">{empty}</p>}
       <div className="card-stack">
-        {nodes.map((n) => (
-          <ChangeCard
-            key={n.id}
-            card={n.card}
-            title={n.name}
-            subtitle={`${n.type} · ${n.cost} ${n.cost === 1 ? 'point' : 'points'}`}
-          >
-            <details className="cc-more">
-              <summary>What it does{n.path.length > 1 ? ' and the path' : ''}</summary>
-              <ul className="cc-stats">{n.stats.map((s, i) => <li key={i}>{s}</li>)}</ul>
-              {n.path.length > 1 && <p className="cc-path">{n.path.join(' → ')}</p>}
-            </details>
-          </ChangeCard>
-        ))}
+        {nodes.map((n) => <NodeCard key={n.id} node={n} />)}
       </div>
     </div>
   )

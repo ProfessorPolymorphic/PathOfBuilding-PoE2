@@ -422,3 +422,44 @@ def test_weak_spots(client, build):
     assert client.get(f"/builds/{bid}/stats", params={"keys": keys}).json() == before
     dl = client.get(f"/builds/{bid}/weak-spots", params={"download": True})
     assert "attachment" in dl.headers["content-disposition"]
+
+
+def test_rank_affixes_identifies_the_item(client, build):
+    r = client.post(f"/builds/{build['build_id']}/items/affixes",
+                    json={"slot": "Belt", "stat": "TotalEHP", "limit": 100}).json()
+    groups = {c["group"] for c in r["current"]}
+    assert {"Strength", "ColdResistance", "LightningResistance"} <= groups
+    assert r["open"] == {"prefix": 1, "suffix": 0} and r["unidentified"] == 0
+    assert r["candidates"] and all(c["side"] == "prefix" for c in r["candidates"])
+    assert "pool" not in r and r["oddsNote"]
+
+
+def test_rank_affixes_delta_matches_compare_item(client, build):
+    """A candidate's delta is the same what-if compare_item gives for the item with that mod."""
+    bid = build["build_id"]
+    r = client.post(f"/builds/{bid}/items/affixes",
+                    json={"slot": "Belt", "stat": "TotalEHP", "limit": 100}).json()
+    life = next(c for c in r["candidates"] if c["group"] == "IncreasedLife")
+    assert life["text"] == "+(85-99) to maximum Life"
+    text = client.get(f"/builds/{bid}/items", params={"slot": "Belt"}).json()["items"][0]["text"]
+    cmp = client.post(f"/builds/{bid}/items/compare",
+                      json={"slot": "Belt", "item": text + "\n+92 to maximum Life"}).json()
+    ehp = next(c for c in cmp["changes"]["player"] if c["stat"] == "TotalEHP")
+    assert life["delta"] == pytest.approx(ehp["after"] - ehp["before"], rel=1e-6)
+    assert any(r_["steps"] == ["Exalted Orb"] for r_ in life["routes"])
+
+
+def test_rank_affixes_replace_and_corrupted(client, build):
+    bid = build["build_id"]
+    r = client.post(f"/builds/{bid}/items/affixes",
+                    json={"slot": "Gloves", "replace": "LocalAttributeRequirements"}).json()
+    assert r["replacing"]["group"] == "LocalAttributeRequirements"
+    assert all(c["side"] == "suffix" for c in r["candidates"])
+    assert all("Omen of Dextral Annulment" in rt["omens"]
+               for c in r["candidates"] for rt in c["routes"] if "Exalted Orb" in rt["steps"][-1])
+    helmet = client.post(f"/builds/{bid}/items/affixes", json={"slot": "Helmet"}).json()
+    assert helmet["corrupted"] and helmet["blocked"]
+    assert all(c["routes"] == [] for c in helmet["candidates"])
+    bad = client.post(f"/builds/{bid}/items/affixes", json={"slot": "Gloves", "replace": "Nope"})
+    assert bad.status_code == 422
+
