@@ -12,26 +12,57 @@ interface Props {
   subtitle?: ReactNode
   // 'baseline' shows the build as it is: values only, no deltas.
   mode?: 'change' | 'baseline'
+  // Lines under the title: the mods an item swap adds (+) and removes (−), warnings (⚠).
+  detail?: string[]
+  // Show only the core stats that changed; the rest fold into one "unchanged" line.
+  // Off where cards sit side by side and the fixed layout is what makes them comparable.
+  collapseUnchanged?: boolean
   children?: ReactNode
 }
 
-export function ChangeCard({ card, title, subtitle, mode = 'change', children }: Props) {
-  const changed = card.core.some((g) => g.rows.some((r) => r.cells.some((c) => c.delta !== undefined)))
+const rowChanged = (row: CardRow) => row.cells.some((c) => c.delta !== undefined)
+
+export function ChangeCard({ card, title, subtitle, mode = 'change', detail, collapseUnchanged = false, children }: Props) {
+  const changed = card.core.some((g) => g.rows.some(rowChanged))
+  const focus = mode === 'change' ? card.focus ?? [] : []
+  const collapse = collapseUnchanged && mode === 'change'
+  const groups = collapse
+    ? card.core.map((g) => ({ ...g, rows: g.rows.filter(rowChanged) })).filter((g) => g.rows.length > 0)
+    : card.core
+  const unchanged = collapse
+    ? card.core.map((g) => ({ ...g, rows: g.rows.filter((r) => !rowChanged(r)) })).filter((g) => g.rows.length > 0)
+    : []
+  const unchangedCount = unchanged.reduce((n, g) => n + g.rows.reduce((m, r) => m + r.cells.length, 0), 0)
+  const renderRows = (rows: CardRow[]) =>
+    rows.map((row, i) =>
+      row.label ? <MultiRow key={i} row={row} mode={mode} /> : <SingleRow key={i} cell={row.cells[0]} mode={mode} />,
+    )
   return (
     <article className={`change-card ${mode}`}>
       <header className="cc-head">
         <div className="cc-title">{title}</div>
         {subtitle && <div className="cc-subtitle">{subtitle}</div>}
+        {detail && detail.length > 0 && (
+          <ul className="cc-detail">
+            {detail.map((line, i) => (
+              <li key={i} className={detailTone(line)}>{line}</li>
+            ))}
+          </ul>
+        )}
       </header>
-      {mode === 'change' && !changed && card.other.length === 0 && (
+      {focus.length > 0 && (
+        <section className="cc-group cc-focus" aria-label="Asked about">
+          <h4>Asked about</h4>
+          {focus.map((cell) => <SingleRow key={cell.key} cell={cell} mode={mode} />)}
+        </section>
+      )}
+      {mode === 'change' && !changed && card.other.length === 0 && !focus.some((c) => c.delta !== undefined) && (
         <p className="cc-none">No change to any stat.</p>
       )}
-      {card.core.map((g) => (
+      {groups.map((g) => (
         <section key={g.group} className="cc-group" aria-label={g.group}>
           <h4>{g.group}</h4>
-          {g.rows.map((row, i) =>
-            row.label ? <MultiRow key={i} row={row} mode={mode} /> : <SingleRow key={i} cell={row.cells[0]} mode={mode} />,
-          )}
+          {renderRows(g.rows)}
         </section>
       ))}
       {card.other.length > 0 && (
@@ -40,9 +71,27 @@ export function ChangeCard({ card, title, subtitle, mode = 'change', children }:
           {card.other.map((o) => <OtherRow key={o.stat} change={o} />)}
         </section>
       )}
+      {unchangedCount > 0 && (
+        <details className="cc-more cc-unchanged">
+          <summary>{unchangedCount} unchanged {unchangedCount === 1 ? 'stat' : 'stats'}</summary>
+          {unchanged.map((g) => (
+            <section key={g.group} className="cc-group" aria-label={`${g.group}, unchanged`}>
+              <h4>{g.group}</h4>
+              {renderRows(g.rows)}
+            </section>
+          ))}
+        </details>
+      )}
       {children}
     </article>
   )
+}
+
+function detailTone(line: string): string {
+  if (line.startsWith('+ ')) return 'add'
+  if (line.startsWith('− ')) return 'remove'
+  if (line.startsWith('⚠')) return 'warn'
+  return ''
 }
 
 function value(cell: CardCell, v: number | string | undefined): string {

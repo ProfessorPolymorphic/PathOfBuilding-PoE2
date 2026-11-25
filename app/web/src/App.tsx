@@ -5,6 +5,7 @@ import { Chat, type ChatEntry } from './components/Chat'
 import { Dashboard } from './components/Dashboard'
 import { DefenceView } from './components/DefenceView'
 import { DistributionView } from './components/DistributionView'
+import { ManaView } from './components/ManaView'
 
 const BUILD_KEY = 'pob.buildId'
 const chatKey = (id: string) => `pob.chat.${id}`
@@ -31,6 +32,7 @@ const TABS = [
   { id: 'dashboard', label: 'Dashboard' },
   { id: 'distribution', label: 'Damage distribution' },
   { id: 'defences', label: 'Against enemy defences' },
+  { id: 'mana', label: 'Mana' },
 ] as const
 type Tab = (typeof TABS)[number]['id']
 
@@ -183,6 +185,11 @@ export default function App() {
             {opened.has('defences') && (
               <div role="tabpanel" id="panel-defences" aria-labelledby="tab-defences" hidden={tab !== 'defences'}>
                 <DefenceView key={buildId} buildId={buildId} build={build} />
+              </div>
+            )}
+            {opened.has('mana') && (
+              <div role="tabpanel" id="panel-mana" aria-labelledby="tab-mana" hidden={tab !== 'mana'}>
+                <ManaView key={buildId} buildId={buildId} build={build} entries={entries} />
               </div>
             )}
           </div>

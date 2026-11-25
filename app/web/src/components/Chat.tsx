@@ -189,7 +189,8 @@ function Entry({ entry }: { entry: ChatEntry }) {
         <div className="chat-cards">
           <h3>Tested in the engine</h3>
           {cards.map((c, i) => (
-            <ChangeCard key={i} card={c.card!} title={c.card_title ?? c.name} subtitle="What-if, not applied" />
+            <ChangeCard key={i} card={c.card!} title={c.card_title ?? c.name} subtitle="What-if, not applied"
+              detail={c.card_detail} collapseUnchanged />
           ))}
         </div>
       )}

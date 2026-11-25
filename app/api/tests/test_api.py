@@ -463,3 +463,24 @@ def test_rank_affixes_replace_and_corrupted(client, build):
     bad = client.post(f"/builds/{bid}/items/affixes", json={"slot": "Gloves", "replace": "Nope"})
     assert bad.status_code == 422
 
+
+def test_mana_endpoints(client, build):
+    bid = build["build_id"]
+    r = client.get(f"/builds/{bid}/sustain")
+    assert r.status_code == 200, r.text
+    lunar = next(s for s in r.json()["skills"] if s["skill"] == "Lunar Assault")
+    assert lunar["mana"]["netPerSecond"] < 0
+
+    r = client.get(f"/builds/{bid}/supports", params={"group": lunar["group"]})
+    names = r.json()["supports"]
+    assert "Efficiency II" in names and "Spell Echo" not in names  # spell support can't go on an attack
+
+    r = client.post(f"/builds/{bid}/compare/gems",
+                    json={"group": "Lunar Assault", "remove": ["Ice Bite II"], "add": ["Efficiency II"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["mana"]["after"]["netPerSecond"] > body["mana"]["before"]["netPerSecond"]
+    assert body["card"]["focus"]
+
+    r = client.post(f"/builds/{bid}/compare/gems", json={"group": "Lunar Assault", "remove": ["Nope"]})
+    assert r.status_code >= 400

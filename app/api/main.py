@@ -565,6 +565,34 @@ async def set_config(build_id: str, var: str, body: ConfigValue):
     return await sessions.call(sessions.get(build_id), "set_config", var=var, value=body.value)
 
 
+@app.get("/builds/{build_id}/sustain")
+async def sustain(build_id: str):
+    """Every enabled skill's cost, use rate and mana sustain (spend vs regen vs leech/on-hit,
+    net per second, seconds until empty), each calculated as if it were the main skill."""
+    return await sessions.call(sessions.get(build_id), "skill_costs")
+
+
+class GemCompare(BaseModel):
+    group: str | int = Field(..., description="Skill name or 1-based group index")
+    remove: list[str] = []
+    add: list[str] = []
+
+
+@app.post("/builds/{build_id}/compare/gems")
+async def compare_gems(build_id: str, body: GemCompare):
+    """What-if for one skill's supports (the build is unchanged): damage, cost and mana
+    sustain before/after, plus a change preview card."""
+    return await sessions.call(sessions.get(build_id), "compare_gems",
+                               group=body.group, remove=body.remove, add=body.add)
+
+
+@app.get("/builds/{build_id}/supports")
+async def list_supports(build_id: str, group: str | None = None):
+    """Support gem names; with `group`, only those that can support that group's skill."""
+    args = {"group": int(group) if group and group.isdigit() else group} if group else {}
+    return await sessions.call(sessions.get(build_id), "list_supports", **args)
+
+
 # -- diagnostics --
 
 @app.post("/builds/{build_id}/benchmark")
@@ -605,6 +633,8 @@ def _tool_json(e: ToolEvent) -> dict:
     if e.card:
         out["card"] = e.card
         out["card_title"] = e.card_title
+        if e.card_detail:
+            out["card_detail"] = e.card_detail
     return out
 
 

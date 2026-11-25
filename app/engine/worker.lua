@@ -210,6 +210,7 @@ end
 local function cardCell(def, key, base, new)
 	local a = type(base[key]) == "number" and base[key] or nil
 	local b = type(new[key]) == "number" and new[key] or nil
+	if def.zeroIfMissing then a, b = a or 0, b or 0 end
 	local cell = { key = key, label = def.label, tone = def.tone, unit = def.unit,
 		before = num(a), after = num(b) }
 	if a and b then
@@ -217,16 +218,70 @@ local function cardCell(def, key, base, new)
 		if d > 0.001 or d < -0.001 then
 			cell.delta = num(d)
 			cell.pct = (a ~= 0 and a == a and a ~= math.huge) and num(d / math.abs(a) * 100) or nil
-			cell.better = d > 0
+			cell.better = (d > 0) ~= (def.lowerIsBetter == true)
 		end
 	end
 	return cell
 end
 
+-- Mana a skill spends and recovers per second, from PoB's own outputs for the main skill.
+-- ManaLeechGainRate is PoB's "Mana Leech/On Hit Rate" (leech plus gain on hit).
+local function manaSustain(o)
+	local cost = o.ManaHasCost and o.ManaCost or 0
+	local spend = o.ManaPerSecondHasCost and o.ManaPerSecondCost or 0
+	local regen = o.ManaRegenRecovery or 0
+	local leech = o.ManaLeechGainRate or 0
+	local net = regen + leech - spend
+	local pool = o.ManaUnreserved or o.Mana or 0
+	return {
+		costPerUse = num(cost), usesPerSecond = cost > 0 and num(spend / cost) or nil,
+		spendPerSecond = num(spend), regenPerSecond = num(regen), leechAndOnHitPerSecond = num(leech),
+		netPerSecond = num(net), pool = num(pool),
+		secondsToEmpty = (net < -0.001 and pool > 0) and num(pool / -net) or nil,
+	}
+end
+
+-- Stats that aren't PoB outputs but are worth showing on a card.
+local DERIVED_STATS = {
+	ManaNetPerSecond = { label = "Net mana per second", get = function(o) return manaSustain(o).netPerSecond end },
+}
+
+-- Label and direction for any stat key, from PoB's sidebar list where it's there.
+local function statDef(key)
+	if DERIVED_STATS[key] then return { label = DERIVED_STATS[key].label } end
+	for _, s in ipairs(build.displayStats) do
+		if s.stat == key and s.label then
+			return { label = cleanText(s.label), lowerIsBetter = s.lowerIsBetter or nil }
+		end
+	end
+	return { label = key }
+end
+
+-- The stats a question is about, shown first on the card.
+local function focusCells(keys, base, new, dps)
+	local cells, seen = {}, {}
+	for _, key in ipairs(keys or {}) do
+		if key == "DPS" or key == "TotalDPS" or key == "CombinedDPS" then key = dps end
+		if type(key) == "string" and not seen[key] then
+			seen[key] = true
+			local def = statDef(key)
+			local derived = DERIVED_STATS[key]
+			local a = derived and { [key] = derived.get(base) } or base
+			local b = derived and { [key] = derived.get(new) } or new
+			-- Costs disappear from the output when they reach zero; read that as 0.
+			def.zeroIfMissing = key:match("Cost$") ~= nil
+			local cell = cardCell(def, key, a, b)
+			if cell.before ~= nil or cell.after ~= nil then table.insert(cells, cell) end
+		end
+	end
+	return cells
+end
+
 -- Card for a change from `base` to `new` calc outputs. With `new` omitted it describes
 -- the build as it is (after == before, no deltas).
-local function buildCard(base, new)
+local function buildCard(base, new, opts)
 	new = new or base
+	opts = opts or {}
 	local dps = dpsKey(base)
 	local groups = {}
 	for _, g in ipairs(CARD_LAYOUT) do
@@ -241,9 +296,11 @@ local function buildCard(base, new)
 		end
 		table.insert(groups, { group = g.group, rows = rows })
 	end
+	local focus = focusCells(opts.focus, base, new, dps)
 	local other = {}
 	if new ~= base then
 		local core, seen = cardKeys(dps), {}
+		for _, c in ipairs(focus) do core[c.key] = true end
 		local env = build.calcsTab.mainEnv
 		for _, c in ipairs(diffStatList(build.displayStats, env.player, base, new)) do
 			if not core[c.stat] and not seen[c.stat] and not c.stat:match("^Spec:") then
@@ -252,7 +309,7 @@ local function buildCard(base, new)
 			end
 		end
 	end
-	return { core = groups, other = other }
+	return { core = groups, other = other, focus = #focus > 0 and focus or nil }
 end
 
 -- Resolve a passive node by numeric id or (case-insensitive) exact name.
@@ -543,8 +600,11 @@ end
 local DAMAGE_KEYS = { "CombinedDPS", "TotalDPS", "TotalDotDPS", "AverageHit", "AverageDamage", "Speed",
 	"CritChance", "CritMultiplier", "HitChance" }
 
-local function damageSnapshot()
-	local o = build.calcsTab.mainOutput
+-- Skill costs as PoB reports them for the main skill: per use and per second (cost x use rate).
+local COST_RESOURCES = { "Mana", "Life", "ES", "Rage" }
+
+local function damageSnapshot(o)
+	o = o or build.calcsTab.mainOutput
 	local snap = {}
 	for _, k in ipairs(DAMAGE_KEYS) do
 		if type(o[k]) == "number" then snap[k] = o[k] end
@@ -552,76 +612,526 @@ local function damageSnapshot()
 	return snap
 end
 
+local function costSnapshot(o)
+	o = o or build.calcsTab.mainOutput
+	local snap = {}
+	for _, r in ipairs(COST_RESOURCES) do
+		if o[r .. "HasCost"] and type(o[r .. "Cost"]) == "number" then snap[r .. "Cost"] = o[r .. "Cost"] end
+		if o[r .. "PerSecondHasCost"] and type(o[r .. "PerSecondCost"]) == "number" then
+			snap[r .. "PerSecondCost"] = o[r .. "PerSecondCost"]
+		end
+	end
+	return snap
+end
+
+-- before/after/delta for every key in either snapshot (a missing key counts as 0).
+local function snapshotDiff(a, b)
+	local out, keys = {}, {}
+	for k in pairs(a) do keys[k] = true end
+	for k in pairs(b) do keys[k] = true end
+	for k in pairs(keys) do
+		local x, y = a[k] or 0, b[k] or 0
+		if math.abs(y - x) > 1e-6 then
+			out[k] = { before = num(x), after = num(y), delta = num(y - x),
+				pct = x ~= 0 and num((y - x) / math.abs(x) * 100) or nil }
+		end
+	end
+	return out
+end
+
+local function recalc()
+	build.buildFlag = true
+	frame()
+end
+
+-- Run fn with group `index` as the main skill (so outputs describe it), then restore the
+-- original main skill and recalculate, even if fn fails.
+local function withMainGroup(index, fn)
+	local orig = build.mainSocketGroup
+	build.mainSocketGroup = index
+	recalc()
+	local ok, result = pcall(fn)
+	build.mainSocketGroup = orig
+	recalc()
+	if not ok then error(result, 0) end
+	return result
+end
+
+-- Run fn, then put every socket group's gem list and each gem's enabled flag back as they were.
+local function preservingGems(fn)
+	local saved = {}
+	for _, g in ipairs(build.skillsTab.socketGroupList) do
+		local list, enabled = {}, {}
+		for i, gem in ipairs(g.gemList) do list[i] = gem; enabled[i] = gem.enabled end
+		saved[g] = { list = list, enabled = enabled, ref = g.gemList }
+	end
+	local ok, result = pcall(fn)
+	for g, s in pairs(saved) do
+		for i, gem in ipairs(s.list) do gem.enabled = s.enabled[i] end
+		if g.gemList ~= s.ref or #g.gemList ~= #s.list then
+			g.gemList = s.ref
+			for i = #g.gemList, 1, -1 do g.gemList[i] = nil end
+			for i, gem in ipairs(s.list) do g.gemList[i] = gem end
+			build.skillsTab:ProcessSocketGroup(g)
+		end
+	end
+	if not ok then error(result, 0) end
+	return result
+end
+
+local function gemEffect(gem)
+	return gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
+end
+
+local function mainSkillName()
+	local ms = build.calcsTab.mainEnv.player.mainSkill
+	return ms and ms.activeEffect and ms.activeEffect.grantedEffect.name or nil
+end
+
+-- Config options keyed by the condition they set: "player:FrozenEnemyRecently", "enemy:Frozen".
+local configByCond
+local function conditionOptions()
+	if not configByCond then
+		configByCond = {}
+		for _, opt in ipairs(require("Modules.ConfigOptions")) do
+			if opt.var and opt.label then
+				for actor, cond in pairs({ player = opt.ifCond, enemy = opt.ifEnemyCond }) do
+					if type(cond) == "string" then
+						local key = actor .. ":" .. cond
+						local exact = opt.var == "condition" .. cond or opt.var == "conditionEnemy" .. cond
+						if not configByCond[key] or exact then configByCond[key] = opt end
+					end
+				end
+			end
+		end
+	end
+	return configByCond
+end
+
+-- What a support's modifiers depend on, read from its game data: the conditions they need
+-- (with the Configuration option that sets each) and the buff it grants, if any.
+local function supportNeeds(ge)
+	local conds, seen, buff = {}, {}, nil
+	local map = conditionOptions()
+	local function scanMod(mod)
+		for _, tag in ipairs(mod) do
+			if type(tag) == "table" then
+				if tag.type == "GlobalEffect" and tag.effectType == "Buff" then buff = buff or tag.effectName or ge.name end
+				if (tag.type == "Condition" or tag.type == "ActorCondition") and not tag.neg then
+					local actor = tag.type == "ActorCondition" and tag.actor or "player"
+					for _, v in ipairs(tag.varList or { tag.var }) do
+						local key = actor .. ":" .. tostring(v)
+						if not seen[key] then
+							seen[key] = true
+							local opt = map[key]
+							local value = opt and build.configTab.input[opt.var]
+							table.insert(conds, { condition = v, actor = actor,
+								configVar = opt and opt.var or nil, configLabel = opt and cleanText(opt.label) or nil,
+								enabled = value ~= nil and value ~= false and value ~= 0 })
+						end
+					end
+				end
+			end
+		end
+	end
+	for _, set in ipairs(ge.statSets or {}) do
+		for _, entry in pairs(set.statMap or {}) do
+			for _, mod in ipairs(entry) do if type(mod) == "table" then scanMod(mod) end end
+		end
+		for _, mod in ipairs(set.baseMods or {}) do if type(mod) == "table" then scanMod(mod) end end
+	end
+	return conds, buff
+end
+
+local function familyOverlap(a, b)
+	if a == b or a.name == b.name then return true end
+	for _, f in ipairs(a.gemFamily or {}) do
+		for _, g in ipairs(b.gemFamily or {}) do if f == g then return true end end
+	end
+	return false
+end
+
+-- Enabled copies of the same support (or its family) in other enabled groups.
+local function otherCopies(ge, group)
+	local out = {}
+	for idx, g in ipairs(build.skillsTab.socketGroupList) do
+		if g ~= group and g.enabled ~= false then
+			for _, gem in ipairs(g.gemList) do
+				local oge = gemEffect(gem)
+				if oge and oge.support and gem.enabled ~= false and familyOverlap(ge, oge) then
+					local active
+					for _, x in ipairs(g.gemList) do
+						local xe = gemEffect(x)
+						if xe and not xe.support then active = xe.name break end
+					end
+					table.insert(out, { gem = gem, group = idx, skill = active, support = oge.name })
+				end
+			end
+		end
+	end
+	return out
+end
+
+-- Run fn with check-box Configuration options temporarily switched on, then restore them.
+local function withConfigOn(vars, fn)
+	local input, saved = build.configTab.input, {}
+	for _, v in ipairs(vars) do saved[v] = input[v]; input[v] = true end
+	build.configTab:BuildModList()
+	recalc()
+	local ok, result = pcall(fn)
+	for _, v in ipairs(vars) do input[v] = saved[v] end
+	build.configTab:BuildModList()
+	recalc()
+	if not ok then error(result, 0) end
+	return result
+end
+
+local function checkOption(var)
+	for _, opt in ipairs(require("Modules.ConfigOptions")) do
+		if opt.var == var then return opt.type == "check" end
+	end
+	return false
+end
+
 -- What each support gem in a skill group contributes: recalculate the skill with each
--- support disabled in turn and report what the skill loses. The build is restored after.
+-- support disabled in turn and report what the skill loses in damage and saves in cost.
+-- For a support with no damage effect, says which condition it needs and whether another
+-- skill already provides the buff it grants. The build is restored after.
 -- args: { group = "Lunar Assault" | 9 }
 function commands.support_contributions(args)
 	requireBuild()
 	local group, index = findSkillGroup(args.group)
-	local origMain = build.mainSocketGroup
-	local disabledGem = nil  -- the gem currently switched off, so we can always restore it
-
-	local function recalc()
-		build.buildFlag = true
-		frame()
-	end
-
-	local ok, result = pcall(function()
-		-- Make this group the main skill so the outputs describe it.
-		build.mainSocketGroup = index
-		recalc()
-		local mainSkill = build.calcsTab.mainEnv.player.mainSkill
-		local skillName = mainSkill and mainSkill.activeEffect and mainSkill.activeEffect.grantedEffect.name
-		local base = damageSnapshot()
-		local primary = (base.CombinedDPS and "CombinedDPS") or "TotalDPS"
-		local rows = {}
-		for _, gem in ipairs(group.gemList) do
-			local ge = gem.grantedEffect or (gem.gemData and gem.gemData.grantedEffect)
-			if ge and ge.support and gem.enabled ~= false then
-				disabledGem = gem
-				gem.enabled = false
-				recalc()
-				local without = damageSnapshot()
-				gem.enabled = true
-				disabledGem = nil
-				local loss = {}
-				for k, v in pairs(base) do
-					local w = without[k]
-					if w and math.abs(v - w) > 1e-6 then
-						loss[k] = { with = num(v), without = num(w), lost = num(v - w),
-							pct = v ~= 0 and num((v - w) / math.abs(v) * 100) or nil }
+	return withMainGroup(index, function()
+		return preservingGems(function()
+			local base, baseCost = damageSnapshot(), costSnapshot()
+			local primary = (base.CombinedDPS and "CombinedDPS") or "TotalDPS"
+			local rows = {}
+			for _, gem in ipairs(group.gemList) do
+				local ge = gemEffect(gem)
+				if ge and ge.support and gem.enabled ~= false then
+					gem.enabled = false
+					recalc()
+					local without, withoutCost = damageSnapshot(), costSnapshot()
+					gem.enabled = true
+					local loss = {}
+					for k, v in pairs(base) do
+						local w = without[k]
+						if w and math.abs(v - w) > 1e-6 then
+							loss[k] = { with = num(v), without = num(w), lost = num(v - w),
+								pct = v ~= 0 and num((v - w) / math.abs(v) * 100) or nil }
+						end
 					end
+					-- Cost this support adds: with it minus without it.
+					local cost = {}
+					for k, d in pairs(snapshotDiff(withoutCost, baseCost)) do
+						cost[k] = { with = d.after, without = d.before, added = d.delta }
+					end
+					local row = {
+						support = ge.name, level = gem.level, quality = gem.quality,
+						primaryLost = loss[primary] and loss[primary].lost or 0,
+						cost = next(cost) and cost or nil,
+					}
+					if next(loss) then
+						row.changes = loss
+					else
+						local conds, buff = supportNeeds(ge)
+						if #conds > 0 then row.needs = conds end
+						local copies = buff and otherCopies(ge, group) or {}
+						-- DPS lost by removing this gem and (if given) the other copies of its buff.
+						local function lossRemoving(gems)
+							local b = damageSnapshot()[primary] or 0
+							for _, g in ipairs(gems) do g.enabled = false end
+							recalc()
+							local w = damageSnapshot()[primary] or 0
+							for _, g in ipairs(gems) do g.enabled = true end
+							recalc()
+							return num(b - w)
+						end
+						local allCopies = { gem }
+						for _, c in ipairs(copies) do table.insert(allCopies, c.gem) end
+						if #copies > 0 then
+							local alsoIn = {}
+							for _, c in ipairs(copies) do
+								table.insert(alsoIn, { group = c.group, skill = c.skill, support = c.support })
+							end
+							row.alsoIn = alsoIn
+							row.lostIfAllCopiesRemoved = lossRemoving(allCopies)
+						end
+						-- Conditions that are off: measure the support with them switched on, so
+						-- "worth it if I freeze?" has an engine answer instead of a guess.
+						local offVars, offLabels = {}, {}
+						for _, c in ipairs(conds) do
+							if not c.enabled then
+								table.insert(offLabels, c.configLabel or c.condition)
+								if c.configVar and checkOption(c.configVar) then table.insert(offVars, c.configVar) end
+							end
+						end
+						if #offVars > 0 then
+							row.ifConditionsOn = withConfigOn(offVars, function()
+								local r = { config = offVars, lost = lossRemoving({ gem }) }
+								if #copies > 0 then r.lostIfAllCopiesRemoved = lossRemoving(allCopies) end
+								return r
+							end)
+						end
+						local parts = {}
+						if #offLabels > 0 then
+							table.insert(parts, "needs " .. table.concat(offLabels, "; ") .. " (off in the current Configuration)")
+						end
+						if #copies > 0 then
+							table.insert(parts, "grants the " .. buff .. " buff, which the copy in "
+								.. (row.alsoIn[1].skill or ("group " .. row.alsoIn[1].group))
+								.. " also provides, so removing only this copy changes nothing")
+						end
+						if #parts == 0 then
+							table.insert(parts, #conds > 0
+								and "its conditions are on but it changes no damage stat; it may affect something else"
+								or "it changes no damage stat; it may affect something other than damage")
+						end
+						row.note = "no effect on this skill's damage now: " .. table.concat(parts, "; ") .. "."
+							.. (row.ifConditionsOn and " ifConditionsOn has the losses with those conditions switched on." or "")
+					end
+					table.insert(rows, row)
 				end
-				local row = {
-					support = ge.name, level = gem.level, quality = gem.quality,
-					primaryLost = loss[primary] and loss[primary].lost or 0,
-				}
-				if next(loss) then
-					row.changes = loss
-				else
-					row.note = "no effect on this skill's damage with the current Configuration; "
-						.. "it may need a condition that isn't enabled, or affect something other than damage"
-				end
-				table.insert(rows, row)
+			end
+			recalc()
+			table.sort(rows, function(a, b) return (tonumber(a.primaryLost) or 0) > (tonumber(b.primaryLost) or 0) end)
+			local baseOut = {}
+			for k, v in pairs(base) do baseOut[k] = num(v) end
+			for k, v in pairs(baseCost) do baseOut[k] = num(v) end
+			return {
+				group = index, skill = mainSkillName(), primaryStat = primary, withAllSupports = baseOut,
+				supports = rows,
+				note = "Each row is the loss from removing that one support while keeping the others. "
+					.. "Supports multiply each other, so the losses don't sum to the total. "
+					.. "cost.*.added is the cost that support adds (with it minus without it).",
+			}
+		end)
+	end)
+end
+
+-- A gem by exact (case-insensitive) name, with suggestions when there's no exact match.
+local function findGemData(name)
+	local want = tostring(name or ""):lower()
+	local partial = {}
+	for _, gem in pairs(data.gems) do
+		if gem.name and gem.name:lower() == want then return gem end
+		if gem.name and gem.name:lower():find(want, 1, true) then table.insert(partial, gem.name) end
+	end
+	table.sort(partial)
+	error("no gem named '" .. tostring(name) .. "'" ..
+		(#partial > 0 and ("; did you mean: " .. table.concat(partial, ", ", 1, math.min(#partial, 10))) or ""), 0)
+end
+
+local MAX_SUPPORTS = 5
+
+-- What-if for one skill's supports (does not change the build): remove and/or add support
+-- gems in a skill group and compare the skill before and after, damage and mana.
+-- args: { group = "Lunar Assault" | 9, remove = {"Ice Bite II"}, add = {"Efficiency II"},
+--         focus = {...} (extra stats shown first on the card) }
+function commands.compare_gems(args)
+	requireBuild()
+	local group, index = findSkillGroup(args.group)
+	local removeSet, removed, added, newGems, warnings = {}, {}, {}, {}, {}
+	local supportNames = {}
+	for _, gem in ipairs(group.gemList) do
+		local ge = gemEffect(gem)
+		if ge and ge.support then table.insert(supportNames, ge.name) end
+	end
+	for _, name in ipairs(args.remove or {}) do
+		local found
+		for _, gem in ipairs(group.gemList) do
+			local ge = gemEffect(gem)
+			if ge and ge.support and not removeSet[gem] and ge.name:lower() == tostring(name):lower() then
+				found = gem break
 			end
 		end
-		table.sort(rows, function(a, b) return (tonumber(a.primaryLost) or 0) > (tonumber(b.primaryLost) or 0) end)
-		local baseOut = {}
-		for k, v in pairs(base) do baseOut[k] = num(v) end
-		return {
-			group = index, skill = skillName, primaryStat = primary, withAllSupports = baseOut,
-			supports = rows,
-			note = "Each row is the loss from removing that one support while keeping the others. "
-				.. "Supports multiply each other, so the losses don't sum to the total.",
-		}
-	end)
+		if not found then
+			error("no support '" .. tostring(name) .. "' in group " .. index .. "; its supports: "
+				.. (#supportNames > 0 and table.concat(supportNames, ", ") or "none"), 0)
+		end
+		removeSet[found] = true
+		table.insert(removed, gemEffect(found).name)
+	end
+	for _, name in ipairs(args.add or {}) do
+		local gemData = findGemData(name)
+		if not gemData.grantedEffect.support then error("'" .. gemData.name .. "' is not a support gem", 0) end
+		table.insert(newGems, {
+			level = build.skillsTab:ProcessGemLevel(gemData), quality = 0, count = 1,
+			enabled = true, enableGlobal1 = true, enableGlobal2 = true,
+			gemId = gemData.id, nameSpec = gemData.name, skillId = gemData.grantedEffectId,
+		})
+		table.insert(added, gemData.name)
+	end
+	if #removed == 0 and #added == 0 then error("nothing to compare: give `add` and/or `remove`", 0) end
+	local supportCount = #supportNames - #removed + #added
+	if supportCount > MAX_SUPPORTS then
+		table.insert(warnings, string.format("this leaves %d supports; a PoE2 skill gem holds at most %d",
+			supportCount, MAX_SUPPORTS))
+	end
 
-	-- Always restore the main skill and recalc, even if something failed.
-	if disabledGem then disabledGem.enabled = true end
-	build.mainSocketGroup = origMain
+	-- Supports the main skill actually uses. PoB drops incompatible supports and, of two from
+	-- the same family, keeps only one.
+	local function appliedSupports()
+		local applied = {}
+		local ms = build.calcsTab.mainEnv.player.mainSkill
+		for _, eff in ipairs(ms and ms.effectList or {}) do
+			if eff.grantedEffect and eff.grantedEffect.support and not eff.superseded then
+				applied[eff.grantedEffect.name] = true
+			end
+		end
+		return applied
+	end
+
+	-- Why a swapped support might change nothing: conditions it needs, and buff copies elsewhere.
+	local about, offVars, seenVar = {}, {}, {}
+	local function describe(ge, role)
+		local conds, buff = supportNeeds(ge)
+		local entry = { support = ge.name, role = role }
+		local off = {}
+		for _, c in ipairs(conds) do
+			if not c.enabled then
+				table.insert(off, c.configLabel or c.condition)
+				if c.configVar and checkOption(c.configVar) and not seenVar[c.configVar] then
+					seenVar[c.configVar] = true
+					table.insert(offVars, c.configVar)
+				end
+			end
+		end
+		if #off > 0 then entry.needsOff = off end
+		local copies = buff and otherCopies(ge, group) or {}
+		if #copies > 0 then
+			entry.buffAlsoFrom = {}
+			for _, c in ipairs(copies) do table.insert(entry.buffAlsoFrom, c.skill or ("group " .. c.group)) end
+		end
+		if entry.needsOff or entry.buffAlsoFrom then table.insert(about, entry) end
+	end
+	for gem in pairs(removeSet) do describe(gemEffect(gem), "removed") end
+	for _, gem in ipairs(newGems) do describe(gem.gemData and gem.gemData.grantedEffect or data.gems[gem.gemId].grantedEffect, "added") end
+
+	-- One comparison under the current Configuration: base vs the changed gem list.
+	local function evaluate(withWarnings)
+		local skill = mainSkillName()
+		local base = build.calcsTab.mainOutput
+		local appliedBefore = appliedSupports()
+		return preservingGems(function()
+			local list = {}
+			for _, gem in ipairs(group.gemList) do if not removeSet[gem] then table.insert(list, gem) end end
+			for _, gem in ipairs(newGems) do table.insert(list, gem) end
+			group.gemList = list
+			build.skillsTab:ProcessSocketGroup(group)
+			recalc()
+			local new = build.calcsTab.mainOutput
+			if withWarnings then
+				-- Warn about every support that won't apply after the change: an added one, or one
+				-- that applied before and is now replaced by an added gem of the same family.
+				local applied = appliedSupports()
+				for _, gem in ipairs(list) do
+					local ge = gemEffect(gem)
+					local name = ge and ge.name
+					local isNew = false
+					for _, g in ipairs(newGems) do if g == gem then isNew = true end end
+					if ge and ge.support and gem.enabled ~= false and not applied[name] and (isNew or appliedBefore[name]) then
+						table.insert(warnings, name .. " doesn't apply to " .. tostring(skill)
+							.. (isNew and " (it can't support this skill, or another support of the same family replaces it)"
+								or " any more (an added support of the same family replaces it)"))
+					end
+				end
+			end
+			return {
+				skill = skill, base = base, new = new,
+				damage = snapshotDiff(damageSnapshot(base), damageSnapshot(new)),
+				cost = snapshotDiff(costSnapshot(base), costSnapshot(new)),
+				mana = { before = manaSustain(base), after = manaSustain(new) },
+			}
+		end)
+	end
+
+	return withMainGroup(index, function()
+		local r = evaluate(true)
+		local base, new = r.base, r.new
+		local focus = { "DPS", "ManaCost", "ManaPerSecondCost", "ManaNetPerSecond" }
+		for _, k in ipairs(args.focus or {}) do table.insert(focus, k) end
+		local result = {
+			group = index, skill = r.skill, removed = removed, added = added,
+			warnings = #warnings > 0 and warnings or nil,
+			damage = r.damage, cost = r.cost, mana = r.mana,
+			about = #about > 0 and about or nil,
+			changes = diffOutputs(base, new),
+			card = buildCard(base, new, { focus = focus }),
+		}
+		-- The same comparison with the conditions those supports need switched on.
+		if #offVars > 0 then
+			local on = withConfigOn(offVars, function() return evaluate(false) end)
+			result.ifConditionsOn = { config = offVars, damage = on.damage, cost = on.cost,
+				manaNetPerSecond = { before = on.mana.before.netPerSecond, after = on.mana.after.netPerSecond } }
+		end
+		return result
+	end)
+end
+
+-- Support gem names, for pickers. args: { group = ... } narrows to supports that PoB's own
+-- compatibility check accepts for that group's active skill.
+function commands.list_supports(args)
+	requireBuild()
+	local activeSkill
+	if args.group ~= nil and args.group ~= json.null then
+		local group = findSkillGroup(args.group)
+		for _, skill in ipairs(build.calcsTab.mainEnv.player.activeSkillList or {}) do
+			if skill.socketGroup == group and not skill.activeEffect.grantedEffect.support then
+				activeSkill = skill break
+			end
+		end
+		if not activeSkill then error("that skill group has no active skill PoB calculates", 0) end
+	end
+	local names, seen = {}, {}
+	for _, gem in pairs(data.gems) do
+		local ge = gem.grantedEffect
+		if ge and ge.support and gem.name and not seen[gem.name] and not ge.hidden then
+			local ok = true
+			if activeSkill then
+				local fine, res = pcall(calcLib.canGrantedEffectSupportActiveSkill, ge, activeSkill)
+				ok = fine and res
+			end
+			if ok then seen[gem.name] = true; table.insert(names, gem.name) end
+		end
+	end
+	table.sort(names)
+	return { supports = names }
+end
+
+-- Cost, use rate and damage of every enabled skill, each calculated as the main skill,
+-- plus the mana it spends and recovers per second while it's used continuously.
+function commands.skill_costs()
+	requireBuild()
+	local out = {}
+	local orig = build.mainSocketGroup
+	local ok, err = pcall(function()
+		for idx, group in ipairs(build.skillsTab.socketGroupList) do
+			local hasActive = false
+			for _, gem in ipairs(group.gemList) do
+				local ge = gemEffect(gem)
+				if ge and not ge.support and gem.enabled ~= false then hasActive = true break end
+			end
+			if group.enabled ~= false and hasActive then
+				build.mainSocketGroup = idx
+				recalc()
+				local o = build.calcsTab.mainOutput
+				local costs = {}
+				for k, v in pairs(costSnapshot(o)) do costs[k] = num(v) end
+				local dps = o[dpsKey(o)]
+				table.insert(out, {
+					group = idx, skill = mainSkillName(), isMain = idx == orig,
+					usesPerSecond = type(o.Speed) == "number" and o.Speed > 0 and num(o.Speed) or nil,
+					dps = type(dps) == "number" and dps > 0 and num(dps) or nil,
+					costs = costs, mana = manaSustain(o),
+				})
+			end
+		end
+	end)
+	build.mainSocketGroup = orig
 	recalc()
-	if not ok then error(result, 0) end
-	return result
+	if not ok then error(err, 0) end
+	return { skills = out }
 end
 
 ---------------------------------------------------------------------------
@@ -966,6 +1476,32 @@ end
 
 -- What-if: swap an item into a slot without changing the build.
 -- args: { slot = "Helmet", item = "<item text as copied from the game>" }
+-- Every mod line on an item (implicits, explicits, runes), as the game shows it.
+local function itemModLines(item)
+	local out = {}
+	if not item then return out end
+	for _, key in ipairs({ "enchantModLines", "runeModLines", "implicitModLines", "explicitModLines" }) do
+		for _, modLine in ipairs(item[key] or {}) do
+			local text = cleanText(modLine.line)
+			if text:find("%((%-?[%d%.]+)%-(%-?[%d%.]+)%)") then text = itemLib.applyRange(text, modLine.range or 0.5) end
+			table.insert(out, text)
+		end
+	end
+	return out
+end
+
+-- Lines only in `a` (as a multiset, so duplicate lines are matched one for one).
+local function linesNotIn(a, b)
+	local count = {}
+	for _, l in ipairs(b) do count[l] = (count[l] or 0) + 1 end
+	local out = {}
+	for _, l in ipairs(a) do
+		if (count[l] or 0) > 0 then count[l] = count[l] - 1 else table.insert(out, l) end
+	end
+	return out
+end
+
+-- args: { slot, item, focus = {"ManaLeechGainRate", ...} (stats shown first on the card) }
 function commands.compare_item(args)
 	requireBuild()
 	local slot = requireSlot(args.slot)
@@ -973,12 +1509,15 @@ function commands.compare_item(args)
 	local calcFunc, base = build.calcsTab:GetMiscCalculator()
 	local new = calcFunc({ repSlotName = slot.slotName, repItem = item }, true)
 	local current = build.itemsTab.items[slot.selItemId]
+	local before, after = itemModLines(current), itemModLines(item)
 	return {
 		slot = slot.slotName,
 		current = current and current.name or nil,
 		candidate = item.name,
+		modsAdded = linesNotIn(after, before),
+		modsRemoved = linesNotIn(before, after),
 		changes = diffOutputs(base, new),
-		card = buildCard(base, new),
+		card = buildCard(base, new, { focus = args.focus }),
 	}
 end
 
@@ -1370,7 +1909,7 @@ function commands.compare_nodes(args)
 		added = added, removed = removed, skipped = skipped,
 		pointDelta = #added - #removed,
 		changes = diffOutputs(base, new),
-		card = buildCard(base, new),
+		card = buildCard(base, new, { focus = args.focus }),
 	}
 end
 

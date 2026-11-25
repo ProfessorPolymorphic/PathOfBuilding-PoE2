@@ -47,18 +47,41 @@ the conversation; use tools for anything else.
 - If you can't verify something, say so plainly; a short honest answer beats a confident guess.
 
 ## How to investigate
+- First decide which skill the question is about. The snapshot's `notes` say which skills cost
+  mana and what the main skill costs; `skills` has each skill's cost and sustain. The main skill
+  is only what PoB's sidebar shows: if it has no cost, a cost/mana question is about another
+  skill. If more than one skill fits, ask the user which one before analysing.
 - "Why is X low/high?": use explain_stat and/or stat_sources for X before answering, and name
   the specific contributors (items, passives, base/penalty values).
-- Before recommending a change (passives, items, config), test it with a compare_* tool and give
-  before -> after numbers. Gains don't add up: test combinations in one compare_passives call.
+- Before recommending a change (passives, items, gems, config), test it with a compare_* tool and give
+  before -> after numbers. Pass `focus` with the stats the question is about (e.g.
+  ["ManaPerSecondCost", "ManaNetPerSecond"]) so the user's card shows them first. Gains don't add up: test combinations in one compare_passives call.
 - For "best nodes" questions use rank_passives (one call ranks every candidate).
 - For "what do my supports/gems contribute?" use support_contributions, then describe_skill
-  for any support you explain. If a support shows no effect, check which Configuration
-  condition it needs (describe_skill + list_config) instead of guessing.
+  for any support you explain. Each row gives the damage it adds and the cost it adds. A row
+  with no effect says why: `needs` lists the conditions it requires (with the config option
+  and whether it's on), and `alsoIn` means another skill's copy already grants the same buff
+  (`lostIfAllCopiesRemoved` is what that buff is worth now). `ifConditionsOn` repeats those
+  losses with the missing conditions switched on: use it for "is it worth it if I freeze?".
+  Report those reasons; don't replace them with your own explanation.
+- To test a support change (swap, add, remove) use compare_gems. Never estimate what a gem
+  swap would do: test it. Read its `warnings` (a support that doesn't apply, too many supports)
+  and `about`: a swapped support's conditions that are off (`needsOff`) and other skills that
+  grant the same buff (`buffAlsoFrom`). Those are the reasons a swap changes no damage; never
+  invent another. `ifConditionsOn` is the same swap with those conditions on: use it when the
+  user says they do meet the condition (e.g. "I freeze a lot").
+- Which skill: the snapshot's `skills` list has every skill's cost per use, uses per second,
+  mana spent and net mana per second. When a question is about one skill ("my attack", "running
+  out of mana") and it isn't clear which, check that list. If the main skill doesn't fit (no
+  cost, not an attack, etc.) ask the user which skill they mean before analysing.
+- Mana/sustain questions: skill_costs gives spend vs regen vs leech/on-hit and seconds until
+  empty for each skill. Name the skill the numbers are for.
 - If no tool can answer part of a question, say exactly what can't be measured. Never fill
   the gap with what a gem or mechanic "typically" or "likely" does.
 - Configuration matters: the snapshot lists active settings (e.g. resistance penalty, enemy type,
-  conditions). When they explain a number, say so. compare_* tools don't change the build;
+  conditions). When they explain a number, say so. A config change can move many things at once;
+  don't credit the whole change to one gem or item without testing that gem or item alone.
+  compare_* tools don't change the build;
   set_config and set_main_skill do. If you change config to test something, restore it
   (value null clears an option) and tell the user.
 - "How do I improve/craft my <item>?": use rank_affixes for that slot. It names the item's
@@ -70,6 +93,7 @@ the conversation; use tools for anything else.
   test it with compare_item, labelled as hypothetical.
 
 ## Answer style
+Answer in the language the user writes in.
 Don't narrate your process; just answer. Lead with the direct answer, then the evidence (key
 numbers, contributors, deltas), then optional next steps. Be concise: short lists or small
 tables. Round sensibly.
@@ -79,7 +103,9 @@ TotalDPS, CombinedDPS, FullDPS, AverageHit, Speed, CritChance, CritMultiplier, H
 Armour, Evasion, PhysicalDamageReduction, EvadeChance, DeflectChance, TotalEHP,
 FireResist, ColdResist, LightningResist, ChaosResist (and *ResistOverCap),
 PhysicalMaximumHitTaken, FireMaximumHitTaken, ColdMaximumHitTaken,
-LightningMaximumHitTaken, ChaosMaximumHitTaken, Str, Dex, Int, LifeRegenRecovery.
+LightningMaximumHitTaken, ChaosMaximumHitTaken, Str, Dex, Int, LifeRegenRecovery,
+ManaCost, ManaPerSecondCost, ManaRegenRecovery, ManaLeechGainRate (leech + gain on hit),
+ManaUnreserved, ManaNetPerSecond (card focus only: regen + leech/on-hit - cost per second).
 Modifier names (stat_sources): Life, EnergyShield, Mana, Armour, Evasion, ColdResist,
 ElementalResist, ColdResistMax, ElementalResistMax, ChaosResist, Damage, PhysicalDamage,
 ElementalDamage, ColdDamage, Speed, CritChance, CritMultiplier, Accuracy, Spirit, ...
@@ -95,6 +121,10 @@ def _fn(name: str, description: str, properties: dict, required: list[str] | Non
 
 NODE_REFS = {"type": "array", "items": {"type": ["string", "integer"]},
              "description": "Passive node names (exact, case-insensitive) or numeric ids"}
+
+FOCUS = {"type": "array", "items": {"type": "string"},
+         "description": "Stat keys the question is about, shown first on the user's card "
+                        "(e.g. ManaPerSecondCost, ManaNetPerSecond, TotalEHP)"}
 
 TOOLS = [
     _fn("get_build_summary",
@@ -159,13 +189,29 @@ TOOLS = [
         "What-if for the passive tree (does not change the build). Adding a node includes the "
         "shortest path to it; removing a node also removes nodes that depend on it. Returns the "
         "nodes actually added/removed, pointDelta, and before/after/delta for every changed stat.",
-        {"add": NODE_REFS, "remove": NODE_REFS}),
+        {"add": NODE_REFS, "remove": NODE_REFS, "focus": FOCUS}),
     _fn("compare_item",
         "What-if for gear (does not change the build): swap an item into a slot and return "
         "before/after/delta for every changed stat. Item text uses the in-game copy format, e.g.\n"
         "Item Class: Helmets\\nRarity: Rare\\nDoom Crown\\nHallowed Crown\\n--------\\n"
         "+80 to maximum Life\\n+40% to Cold Resistance",
-        {"slot": {"type": "string"}, "item_text": {"type": "string"}}, ["slot", "item_text"]),
+        {"slot": {"type": "string"}, "item_text": {"type": "string"}, "focus": FOCUS},
+        ["slot", "item_text"]),
+    _fn("compare_gems",
+        "What-if for one skill's support gems (does not change the build): remove and/or add "
+        "supports in a skill group (a swap is both) and return the skill's damage and cost "
+        "before/after, mana spent vs recovered per second, and every changed stat. New gems use "
+        "the build's default gem level. `warnings` says if an added support doesn't apply.",
+        {"group": {"type": ["string", "integer"],
+                   "description": "Skill name (e.g. 'Lunar Assault') or 1-based group index"},
+         "remove": {"type": "array", "items": {"type": "string"}, "description": "Support names in that group"},
+         "add": {"type": "array", "items": {"type": "string"}, "description": "Exact support gem names, e.g. 'Efficiency II'"},
+         "focus": FOCUS},
+        ["group"]),
+    _fn("skill_costs",
+        "Every enabled skill's cost per use, uses per second, DPS, and mana sustain while used "
+        "continuously: spend, regen, leech/on-hit and net mana per second, and seconds until the "
+        "unreserved pool is empty. Each skill is calculated as if it were the main skill.", {}),
     _fn("rank_affixes",
         "Crafting advice for one equipped item: identifies its prefixes/suffixes, measures what "
         "each mod that could fill an open slot (at its best tier for the item level) adds to the "
@@ -217,9 +263,16 @@ def _engine_request(name: str, args: dict) -> tuple[str, dict]:
         return "rank_nodes", {k: v for k, v in args.items()
                               if k in ("stat", "query", "types", "max_cost", "candidates", "limit", "also") and v not in (None, "", [])}
     if name == "compare_passives":
-        return "compare_nodes", {"add": args.get("add") or [], "remove": args.get("remove") or []}
+        return "compare_nodes", {"add": args.get("add") or [], "remove": args.get("remove") or [],
+                                 "focus": args.get("focus") or []}
     if name == "compare_item":
-        return "compare_item", {"slot": args.get("slot"), "item": args.get("item_text")}
+        return "compare_item", {"slot": args.get("slot"), "item": args.get("item_text"),
+                                "focus": args.get("focus") or []}
+    if name == "compare_gems":
+        return "compare_gems", {"group": args.get("group"), "remove": args.get("remove") or [],
+                                "add": args.get("add") or [], "focus": args.get("focus") or []}
+    if name == "skill_costs":
+        return "skill_costs", {}
     if name == "rank_affixes":
         return "rank_affixes", {"limit": 8, **{k: v for k, v in args.items()
                                 if k in ("slot", "stat", "also", "replace", "limit") and v not in (None, "", [])}}
@@ -245,6 +298,45 @@ def _compact(value: Any) -> Any:
     return value
 
 
+def _skill_notes(summary: dict, costs: dict[int, dict]) -> list[str]:
+    """Plain statements about skill costs, so the model can't miss which skill spends mana."""
+    def n(v: float) -> str:
+        return f"{v:,.0f}" if abs(v) >= 10 else f"{v:.1f}"
+
+    notes = []
+    main = next((c for c in costs.values() if c.get("isMain")), None)
+    if main:
+        mc = (main.get("mana") or {}).get("costPerUse") or 0
+        notes.append(f"The main skill ({main['skill']}) costs {n(mc)} mana per use."
+                     if mc else f"The main skill ({main['skill']}) has no mana cost, so it can't be "
+                     "what drains mana. Mana questions are about the skills listed next.")
+    spenders = sorted((c for c in costs.values() if (c.get("mana") or {}).get("spendPerSecond")),
+                      key=lambda c: -c["mana"]["spendPerSecond"])
+    if spenders:
+        parts = []
+        for c in spenders:
+            m = c["mana"]
+            empty = f", empty in {n(m['secondsToEmpty'])} s" if m.get("secondsToEmpty") else ""
+            parts.append(f"{c['skill']} (group {c['group']}): {n(m['costPerUse'])} per use x "
+                         f"{n(m.get('usesPerSecond') or 0)}/s = {n(m['spendPerSecond'])} mana/s, "
+                         f"net {n(m['netPerSecond'])}/s{empty}")
+        notes.append("Skills that cost mana, used continuously (regen + leech/on-hit minus cost): "
+                     + "; ".join(parts) + ".")
+    return notes
+
+
+def _skill_cost_fields(c: dict | None) -> dict:
+    """The per-skill numbers the model needs to tell which skill a question is about."""
+    if not c:
+        return {}
+    mana = c.get("mana") or {}
+    out = {"usesPerSecond": c.get("usesPerSecond"), "dps": c.get("dps"),
+           "costs": c.get("costs") or None,
+           "manaNetPerSecond": mana.get("netPerSecond") if mana.get("spendPerSecond") else None,
+           "secondsToEmpty": mana.get("secondsToEmpty")}
+    return {k: v for k, v in out.items() if v not in (None, {}, [])}
+
+
 @dataclass
 class ToolEvent:
     """One tool call, for showing the user what the agent did."""
@@ -255,19 +347,44 @@ class ToolEvent:
     # Change preview card from a compare_* tool, shown to the user as the engine produced it.
     card: dict | None = None
     card_title: str | None = None
+    card_detail: list[str] = field(default_factory=list)
 
 
-def _card_title(result: dict) -> str:
-    """What a compared change was, in the words of the engine's own result."""
+def _card_title(result: dict) -> str | None:
+    """What a compared change was, in the words of the engine's own result. None when the
+    what-if changed nothing (e.g. every passive was skipped), so no card is shown."""
     if "candidate" in result:
         current = result.get("current")
-        return f"{result['candidate']} in {result['slot']}" + (f" (replacing {current})" if current else "")
+        if current == result["candidate"]:
+            return f"{result['slot']}: {current}, edited"
+        return f"{result['slot']}: {result['candidate']}" + (f" (replacing {current})" if current else "")
     parts = []
-    if result.get("added"):
-        parts.append("+" + ", ".join(result["added"]))
     if result.get("removed"):
         parts.append("−" + ", ".join(result["removed"]))
-    return "; ".join(parts) or "No change"
+    if result.get("added"):
+        parts.append("+" + ", ".join(result["added"]))
+    if not parts:
+        return None
+    if result.get("skill"):  # compare_gems
+        return f"{result['skill']}: " + ", ".join(parts)
+    return "; ".join(parts)
+
+
+def _card_detail(result: dict) -> list[str]:
+    """Lines under the card title: the mods an item swap changes, and engine warnings."""
+    lines = [f"+ {m}" for m in result.get("modsAdded") or []]
+    lines += [f"− {m}" for m in result.get("modsRemoved") or []]
+    if "candidate" in result and not lines:
+        lines.append("Same mods as the equipped item")
+    lines += [f"⚠ {w}" for w in result.get("warnings") or []]
+    return lines
+
+
+def _no_change_reason(result: dict) -> str:
+    skipped = result.get("skipped") or []
+    if skipped:
+        return "nothing tested: " + "; ".join(f"{s.get('node')} ({s.get('reason')})" for s in skipped)
+    return "nothing tested"
 
 
 @dataclass
@@ -292,11 +409,13 @@ class Agent:
         knows the assumptions behind the numbers (and needs one fewer round trip)."""
         summary = await self.engine_call("summary") or {}
         config = await self.engine_call("list_config", query="", set_only=True) or {}
+        costs = {s["group"]: s for s in (await self.engine_call("skill_costs") or {}).get("skills", [])}
         snapshot = {
             "character": {k: summary.get(k) for k in
                           ("class", "ascendancy", "level", "mainSkill", "passivePoints", "ascendancyPoints")},
             "skills": [{"index": g["index"], "active": g.get("activeSkill"), "main": g["isMain"],
-                        "supports": [x["name"] for x in g["gems"] if x["support"]]}
+                        "supports": [x["name"] for x in g["gems"] if x["support"]],
+                        **_skill_cost_fields(costs.get(g["index"]))}
                        for g in summary.get("skills", []) if g.get("gems")],
             "items": {i["slot"]: i["name"] for i in summary.get("items", [])},
             "keystones": summary.get("keystones", []),
@@ -307,7 +426,10 @@ class Agent:
                 for o in (config or {}).get("options", [])
             ],
         }
-        return ("Build snapshot at the start of this conversation (stats are PoB sidebar values; "
+        notes = _skill_notes(summary, costs)
+        return (("Read these first (engine facts about skill costs):\n"
+                 + "\n".join(f"- {n}" for n in notes) + "\n\n" if notes else "")
+                + "Build snapshot at the start of this conversation (stats are PoB sidebar values; "
                 "config lists every non-default Configuration setting):\n"
                 + json.dumps(_compact(snapshot), separators=(",", ":")))
 
@@ -333,8 +455,12 @@ class Agent:
         text = json.dumps(_compact(result), separators=(",", ":"))
         if len(text) > MAX_TOOL_RESULT_CHARS:
             text = text[:MAX_TOOL_RESULT_CHARS] + '..."[truncated: narrow the query]"'
-        return text, ToolEvent(name, args, True, f"{len(text)} chars",
-                               card=card, card_title=_card_title(result) if card else None)
+        summary = f"{len(text)} chars"
+        title = _card_title(result) if card else None
+        if card and title is None:
+            card, summary = None, _no_change_reason(result)
+        return text, ToolEvent(name, args, True, summary, card=card, card_title=title,
+                               card_detail=_card_detail(result) if card else [])
 
     async def ask(self, question: str) -> str:
         """Answer one user message, calling engine tools as needed.
