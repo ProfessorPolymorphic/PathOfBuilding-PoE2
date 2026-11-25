@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable
 
 from openai import AsyncOpenAI
 
+import crafting
 import settings
 from engine import EngineError
 
@@ -60,6 +61,11 @@ the conversation; use tools for anything else.
   conditions). When they explain a number, say so. compare_* tools don't change the build;
   set_config and set_main_skill do. If you change config to test something, restore it
   (value null clears an option) and tell the user.
+- "How do I improve/craft my <item>?": use rank_affixes for that slot. It names the item's
+  affixes (with what losing each costs), the best mods for open slots, and the currency, omen
+  and essence routes to each. Its odds count mod tiers as equally likely (real PoE2 weights are
+  unknown): say so whenever you quote them. To replace a weak affix, call it again with
+  `replace` set to that affix's group. Crafting rules come only from these routes.
 - You can't search the trade site. To evaluate gear ideas, write a plausible PoE2 item and
   test it with compare_item, labelled as hypothetical.
 
@@ -160,6 +166,19 @@ TOOLS = [
         "Item Class: Helmets\\nRarity: Rare\\nDoom Crown\\nHallowed Crown\\n--------\\n"
         "+80 to maximum Life\\n+40% to Cold Resistance",
         {"slot": {"type": "string"}, "item_text": {"type": "string"}}, ["slot", "item_text"]),
+    _fn("rank_affixes",
+        "Crafting advice for one equipped item: identifies its prefixes/suffixes, measures what "
+        "each mod that could fill an open slot (at its best tier for the item level) adds to the "
+        "build, and lists currency/omen/essence routes with tier-count odds. With `replace`, ranks "
+        "mods for the slot freed by removing that affix instead.",
+        {"slot": {"type": "string", "description": "e.g. Helmet, Gloves, Ring 1, Belt"},
+         "stat": {"type": "string", "description": "Output key to rank by (default DPS = main "
+                  "skill total; e.g. TotalEHP, Life)"},
+         "also": {"type": "array", "items": {"type": "string"},
+                  "description": "Extra stats to report deltas for (default Life, EnergyShield, TotalEHP)"},
+         "replace": {"type": "string", "description": "Group (from `current`) of an affix to replace"},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 30}},
+        ["slot"]),
     _fn("list_config",
         "Search the Configuration options (combat conditions, enemy state, charges, buffs). "
         "set_only=true lists only options currently set.",
@@ -201,6 +220,9 @@ def _engine_request(name: str, args: dict) -> tuple[str, dict]:
         return "compare_nodes", {"add": args.get("add") or [], "remove": args.get("remove") or []}
     if name == "compare_item":
         return "compare_item", {"slot": args.get("slot"), "item": args.get("item_text")}
+    if name == "rank_affixes":
+        return "rank_affixes", {"limit": 8, **{k: v for k, v in args.items()
+                                if k in ("slot", "stat", "also", "replace", "limit") and v not in (None, "", [])}}
     if name == "list_config":
         return "list_config", {"query": args.get("query", ""), "set_only": bool(args.get("set_only"))}
     if name == "set_config":
@@ -300,6 +322,8 @@ class Agent:
         try:
             cmd, engine_args = _engine_request(name, args)
             result = await self.engine_call(cmd, **engine_args)
+            if cmd == "rank_affixes":
+                result = crafting.plan(result)
         except KeyError:
             return json.dumps({"error": f"unknown tool {name}"}), ToolEvent(name, args, False, "unknown tool")
         except EngineError as e:
