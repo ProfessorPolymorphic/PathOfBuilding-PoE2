@@ -53,8 +53,11 @@ Pasting a build fills a dashboard beside the chat. Every candidate change is sho
 change preview card: the same core stats every time (Total DPS; Life, ES, Spirit; Armour,
 Evasion, resistances; effective HP, max hit by type), then any other sidebar stat that
 changed. The engine builds the card (`buildCard` in `engine/worker.lua`), so its numbers
-never pass through the LLM. `compare_item` and `compare_nodes` return one as `card`, and the
-chat shows the cards for every what-if the agent tested. The model doesn't see the cards.
+never pass through the LLM. `compare_item`, `compare_nodes` and `compare_gems` return one as
+`card`, and the chat shows the cards for every what-if the agent tested. The model doesn't see
+the cards. A card can lead with `focus` stats (the ones the question is about, e.g. mana cost
+per second); in chat, unchanged core stats fold into one line, item swaps list the mods they
+add and remove, and a what-if that tested nothing (every node skipped) gets no card.
 
 ```
 GET /builds/{id}/card                      core stats of the build as it is
@@ -172,7 +175,7 @@ app/engine/test.sh                      # upstream PoB busted suite (~60s)
 
 ## Engine notes
 
-- **Worker protocol** (`engine/worker.lua`): one JSON request per line on stdin, one response per line on stdout. PoB logs go to stderr. Commands: `load_xml`, `summary`, `stats`, `export_xml`, `item_details`, `search_nodes`, `rank_nodes`, `compare_nodes`, `apply_nodes`, `compare_item`, `equip_item`, `list_config`, `set_config`, `set_main_skill`, `hit_distribution`, `hit_sweep`, `sweep_current`, `weak_spots`, `benchmark`.
+- **Worker protocol** (`engine/worker.lua`): one JSON request per line on stdin, one response per line on stdout. PoB logs go to stderr. Commands: `load_xml`, `summary`, `stats`, `export_xml`, `item_details`, `search_nodes`, `rank_nodes`, `compare_nodes`, `apply_nodes`, `compare_item`, `equip_item`, `support_contributions`, `compare_gems`, `skill_costs`, `list_config`, `set_config`, `set_main_skill`, `hit_distribution`, `hit_sweep`, `sweep_current`, `weak_spots`, `benchmark`.
 - `compare_*` commands are what-ifs computed with PoB's own misc calculator (the one behind its tooltips); they don't modify the build. `apply_*`/`equip_*`/`set_*` do.
 - Share codes are decoded in Python (`api/buildcode.py`) because headless PoB stubs out `Inflate`/`Deflate`.
 - One worker holds one build, boots in ~1.3s, loads a build in ~1.3s, uses ~400 MB, and evaluates a single what-if in ~24 ms. The API caps running workers (`POB_MAX_WORKERS`, default 4) and parks the least recently used ones; a parked build reloads from its XML snapshot on next use. A crashed worker is restarted the same way.

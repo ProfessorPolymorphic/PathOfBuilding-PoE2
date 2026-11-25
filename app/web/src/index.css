@@ -455,6 +455,13 @@ button.icon:hover:not(:disabled) { color: var(--bad); filter: none; }
 .tone-physical { --tone: var(--physical); }
 
 .cc-other { border-top: 1px dashed var(--border); padding-top: 0.45rem; }
+.cc-detail { list-style: none; margin: 0.35rem 0 0; padding: 0; font-size: 0.8rem; display: grid; gap: 0.1rem; }
+.cc-detail li { overflow-wrap: anywhere; }
+.cc-detail .add { color: var(--good); }
+.cc-detail .remove { color: var(--bad); }
+.cc-detail .warn { color: var(--lightning); }
+.cc-focus { background: var(--panel-2); border-radius: 4px; padding: 0.35rem 0.5rem; }
+.cc-unchanged .cc-group { margin-top: 0.4rem; }
 .cc-more { font-size: 0.8rem; color: var(--muted); }
 .cc-more summary { cursor: pointer; display: list-item; list-style: disclosure-closed; }
 .cc-more[open] summary { list-style: disclosure-open; }
@@ -513,3 +520,26 @@ button.icon:hover:not(:disabled) { color: var(--bad); filter: none; }
 .ns-card { max-width: 380px; }
 .ns-card > p { margin: 0.3rem 0; }
 
+/* ---------- mana tab ---------- */
+.mana-lead { margin: 0; font-size: 0.9rem; }
+.mana-lead strong { font-variant-numeric: tabular-nums; }
+.accent { color: var(--accent); }
+.warn { color: var(--warn); }
+.badge.mana-net { font-variant-numeric: tabular-nums; }
+.badge.mana-net.drain { color: var(--bad); }
+.swap-fields { display: flex; flex-direction: column; gap: 0.45rem; }
+.swap-fields label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.78rem; color: var(--muted); }
+.swap-fields select, .swap-fields input {
+  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+  border-radius: 6px; padding: 0.3rem 0.45rem; font: inherit; font-size: 0.85rem; min-width: 0;
+}
+.swap-fields select:focus-visible, .swap-fields input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.swap-actions { display: flex; gap: 0.4rem; margin: 0.5rem 0 0.3rem; }
+button.link { background: none; border: none; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+.mana-legend { list-style: none; margin: 0 0 0.3rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 1rem; font-size: 0.78rem; color: var(--muted); }
+.mana-legend li { display: flex; align-items: center; gap: 0.4rem; }
+.line-key { display: inline-block; width: 14px; height: 2px; }
+.bar-key { display: inline-block; width: 14px; height: 8px; border-radius: 2px; background: var(--noncrit); opacity: 0.45; }
+.tick-key { display: inline-block; width: 3px; height: 12px; background: var(--noncrit); }
+.mana-table { margin-top: 0.3rem; }
+.mana-table table { margin-top: 0.4rem; }

@@ -90,6 +90,7 @@ export interface OtherChange {
 export interface Card {
   core: CardGroup[]
   other: OtherChange[]
+  focus?: CardCell[]   // the stats the question was about, shown first
 }
 
 export interface NodeCandidate {
@@ -227,6 +228,42 @@ export interface ConfigOption {
   value?: unknown
 }
 
+// Mana a skill spends and recovers per second while used continuously (engine manaSustain).
+export interface ManaSustain {
+  costPerUse: number
+  usesPerSecond?: number
+  spendPerSecond: number
+  regenPerSecond: number
+  leechAndOnHitPerSecond: number
+  netPerSecond: number
+  pool: number
+  secondsToEmpty?: number   // absent when the pool never empties
+}
+
+export interface SkillCost {
+  group: number
+  skill: string
+  isMain: boolean
+  usesPerSecond?: number
+  dps?: number
+  costs: Record<string, number> | []
+  mana: ManaSustain
+}
+
+export interface StatDelta { before: number; after: number; delta: number; pct?: number }
+
+export interface GemCompareResult {
+  group: number
+  skill: string
+  removed: string[]
+  added: string[]
+  warnings?: string[]
+  damage: Record<string, StatDelta> | []
+  cost: Record<string, StatDelta> | []
+  mana: { before: ManaSustain; after: ManaSustain }
+  card: Card
+}
+
 export interface ToolCall {
   name: string
   args: Record<string, unknown>
@@ -234,6 +271,7 @@ export interface ToolCall {
   summary: string
   card?: Card
   card_title?: string
+  card_detail?: string[]   // mods an item swap changes, engine warnings
 }
 
 export interface ChatReply {
@@ -333,6 +371,11 @@ export const api = {
   dashboardDownloadUrl: (id: string) => `/builds/${id}/dashboard?download=true`,
   distribution: (id: string, body: { skill: string | number; scenarios: ScenarioRequest[]; samples?: number; by_type?: boolean }) =>
     request<Distribution>('POST', `/builds/${id}/distribution`, body),
+  sustain: (id: string) => request<{ skills: SkillCost[] }>('GET', `/builds/${id}/sustain`),
+  compareGems: (id: string, body: { group: string | number; remove: string[]; add: string[] }) =>
+    request<GemCompareResult>('POST', `/builds/${id}/compare/gems`, body),
+  supports: (id: string, group?: number) =>
+    request<{ supports: string[] }>('GET', `/builds/${id}/supports${group ? `?group=${group}` : ''}`),
   weakSpots: (id: string) => request<WeakSpots>('GET', `/builds/${id}/weak-spots`),
   weakSpotsDownloadUrl: (id: string) => `/builds/${id}/weak-spots?download=true`,
   defences: () => request<Defence[]>('GET', '/defences'),
