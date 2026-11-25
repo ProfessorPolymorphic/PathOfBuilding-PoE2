@@ -1,13 +1,18 @@
 import { useCallback, useEffect, useState } from 'react'
-import { api, ApiError, type BuildSummary } from './api'
+import { api, ApiError, type BuildSummary, type LoadedBuild } from './api'
 import { BuildLoader } from './components/BuildLoader'
 import { Chat, type ChatEntry } from './components/Chat'
 import { Dashboard } from './components/Dashboard'
 import { DefenceView } from './components/DefenceView'
 import { DistributionView } from './components/DistributionView'
+import { HistoryView } from './components/HistoryView'
 import { ManaView } from './components/ManaView'
 
 const BUILD_KEY = 'pob.buildId'
+// Which character, and which of its saved snapshots, the open build came from.
+const ORIGIN_KEY = 'pob.origin'
+interface Origin { character: string | null; snapshotId: string | null }
+const NO_ORIGIN: Origin = { character: null, snapshotId: null }
 const chatKey = (id: string) => `pob.chat.${id}`
 
 // localStorage can be unavailable (private mode, blocked storage); never let that break the app.
@@ -33,6 +38,7 @@ const TABS = [
   { id: 'distribution', label: 'Damage distribution' },
   { id: 'defences', label: 'Against enemy defences' },
   { id: 'mana', label: 'Mana' },
+  { id: 'history', label: 'History' },
 ] as const
 type Tab = (typeof TABS)[number]['id']
 
@@ -62,10 +68,23 @@ export default function App() {
   const [chatConfigured, setChatConfigured] = useState(true)
   const [showLoader, setShowLoader] = useState(false)
   const [notice, setNotice] = useState<string | null>(null)
+  const [origin, setOriginState] = useState<Origin>(() => load<Origin>(ORIGIN_KEY, NO_ORIGIN))
+  const [characters, setCharacters] = useState<string[]>([])
+  const [switching, setSwitching] = useState(false)
+
+  const setOrigin = useCallback((o: Origin) => {
+    setOriginState(o)
+    save(ORIGIN_KEY, o.character ? o : null)
+  }, [])
+
+  const refreshCharacters = useCallback(() => {
+    api.characters().then((cs) => setCharacters(cs.map((c) => c.character))).catch(() => undefined)
+  }, [])
 
   useEffect(() => {
     api.health().then((h) => setChatConfigured(h.chat_configured)).catch(() => undefined)
-  }, [])
+    refreshCharacters()
+  }, [refreshCharacters])
 
   // Restore the last build (the server keeps it in memory until it restarts).
   useEffect(() => {
@@ -94,15 +113,45 @@ export default function App() {
     })
   }, [buildId])
 
-  async function loadBuild(code: string) {
-    const res = await api.loadBuild(code)
-    if (buildId) save(chatKey(buildId), null)
+  // Make a freshly loaded build the open one. The previous working copy is dropped on the
+  // server; its pasted snapshot and its chats stay in the history.
+  function adopt(res: LoadedBuild) {
+    if (buildId && buildId !== res.build_id) {
+      save(chatKey(buildId), null)
+      api.deleteBuild(buildId).catch(() => undefined)
+    }
     save(BUILD_KEY, res.build_id)
     setBuildId(res.build_id)
     setBuild(res.summary)
+    setOrigin({ character: res.character, snapshotId: res.snapshot?.id ?? null })
     setEntriesState([])
     setShowLoader(false)
     setNotice(null)
+    refreshCharacters()
+  }
+
+  async function loadBuild(code: string, character: string) {
+    adopt(await api.loadBuild(code, character))
+  }
+
+  async function openSnapshot(snapshotId: string) {
+    adopt(await api.openSnapshot(snapshotId))
+  }
+
+  // Switching character opens its most recently pasted build.
+  async function switchCharacter(name: string) {
+    if (name === origin.character) return
+    setSwitching(true)
+    try {
+      const snaps = await api.snapshots(name)
+      const latest = snaps[snaps.length - 1]
+      if (!latest) throw new Error(`${name} has no saved builds.`)
+      await openSnapshot(latest.id)
+    } catch (err) {
+      setNotice(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSwitching(false)
+    }
   }
 
   // The server no longer has this build (it was deleted, or its saved copy was lost).
@@ -112,8 +161,10 @@ export default function App() {
     setBuildId(null)
     setBuild(null)
     setEntriesState([])
-    setNotice('The server no longer has that build loaded. Paste its code again to continue.')
-  }, [buildId])
+    setNotice(origin.character
+      ? `The server no longer has that build loaded. Open it again from ${origin.character}’s history, or paste its code.`
+      : 'The server no longer has that build loaded. Paste its code again to continue.')
+  }, [buildId, origin.character])
 
   const refreshBuild = useCallback(() => {
     if (!buildId) return
@@ -132,11 +183,29 @@ export default function App() {
           <span>Build Advisor</span>
           <span className="muted">PoE2 · Path of Building engine</span>
         </div>
-        {build && (
+        {(build || characters.length > 0) && (
           <div className="build-id">
-            <strong>Level {build.level} {build.ascendancy ?? build.class}</strong>
-            <span className="muted">{build.mainSkill ? `${build.mainSkill} · ` : ''}{build.class}</span>
-            <button className="ghost small" onClick={() => setShowLoader(true)}>Load another build</button>
+            {characters.length > 0 && (
+              <label className="character-switch">
+                <span>Character</span>
+                <select
+                  value={origin.character ?? ''}
+                  onChange={(e) => void switchCharacter(e.target.value)}
+                  disabled={switching}
+                >
+                  {!origin.character && <option value="" disabled>Choose…</option>}
+                  {characters.map((c) => <option key={c} value={c}>{c}</option>)}
+                </select>
+              </label>
+            )}
+            {build && (
+              <>
+                <strong>Level {build.level} {build.ascendancy ?? build.class}</strong>
+                <span className="muted">{build.mainSkill ? `${build.mainSkill} · ` : ''}{build.class}</span>
+              </>
+            )}
+            {switching && <span className="muted">Opening…</span>}
+            {build && <button className="ghost small" onClick={() => setShowLoader(true)}>Paste a build</button>}
           </div>
         )}
       </header>
@@ -147,13 +216,18 @@ export default function App() {
 
       {!loading && (!build || showLoader) && (
         <main className="empty">
-          <BuildLoader onLoad={loadBuild} onCancel={build ? () => setShowLoader(false) : undefined} />
+          <BuildLoader
+            onLoad={loadBuild}
+            onCancel={build ? () => setShowLoader(false) : undefined}
+            characters={characters}
+            defaultCharacter={origin.character ?? undefined}
+          />
         </main>
       )}
 
       {build && !showLoader && buildId && (
         <nav className="tabs" role="tablist" aria-label="Views">
-          {TABS.map((t) => (
+          {TABS.filter((t) => t.id !== 'history' || origin.character).map((t) => (
             <button
               key={t.id}
               role="tab"
@@ -190,6 +264,11 @@ export default function App() {
             {opened.has('mana') && (
               <div role="tabpanel" id="panel-mana" aria-labelledby="tab-mana" hidden={tab !== 'mana'}>
                 <ManaView key={buildId} buildId={buildId} build={build} entries={entries} />
+              </div>
+            )}
+            {opened.has('history') && origin.character && (
+              <div role="tabpanel" id="panel-history" aria-labelledby="tab-history" hidden={tab !== 'history'}>
+                <HistoryView key={origin.character} character={origin.character} openSnapshotId={origin.snapshotId} onOpen={openSnapshot} />
               </div>
             )}
           </div>

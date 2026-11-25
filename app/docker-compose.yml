@@ -20,13 +20,12 @@ services:
       POB_MAX_WORKERS: "4"
       CORS_ORIGINS: "http://localhost:5173"   # only for the Vite dev server; the built app is same-origin
     volumes:
-      - builds:/data          # saved builds survive restarts and image rebuilds
+      # Saved builds, snapshot history and chat logs, as plain files in app/.state (git-ignored)
+      # so they survive rebuilds and can be read from the host.
+      - ./.state:/data
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
-
-volumes:
-  builds:
 
 # Pin the subnet: Docker's default picks from 172.16-31.x, and MindRouter's campus/VPN
 # address (172.27.x) falls in that range, which made it unreachable from the container.
