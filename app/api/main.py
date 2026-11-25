@@ -28,6 +28,7 @@ from pathlib import Path
 from pydantic import BaseModel, Field, model_validator
 
 import buildcode
+import chatlog
 import crafting
 import distribution
 import settings
@@ -44,6 +45,8 @@ STATE_DIR = Path(os.getenv("POB_STATE_DIR", Path(__file__).resolve().parent.pare
 BUILD_ID_RE = re.compile(r"^[0-9a-f]{12}$")
 # Every pasted build is also kept here, unchanged, as history (see snapshots.py).
 SNAPSHOT_DIR = Path(os.getenv("POB_SNAPSHOT_DIR", STATE_DIR.parent / "snapshots"))
+# Every chat conversation, with the model's full tool trace (see chatlog.py).
+CHAT_DIR = Path(os.getenv("POB_CHAT_DIR", STATE_DIR.parent / "chats"))
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +60,10 @@ class Session:
         self.last_used = time.monotonic()
         self.agent: Agent | None = None  # created on first chat message
         self.chat_lock = asyncio.Lock()  # one question at a time per build
+        self.conversation_id: str | None = None  # chat log file; a new one after each reset
+        # Which character and saved snapshot this working copy came from.
+        self.character: str | None = None
+        self.snapshot_id: str | None = None
         # Dashboard data for the build as it was when computed: (xml it describes, data).
         self.dashboard: tuple[str | None, dict] | None = None
         self.dashboard_lock = asyncio.Lock()
@@ -89,7 +96,9 @@ class SessionManager:
             tmp = xml_path.with_suffix(".tmp")
             tmp.write_text(session.worker.xml_snapshot)
             tmp.replace(xml_path)  # atomic: never leave a half-written build
-            meta_path.write_text(json.dumps({"name": session.worker.build_name}))
+            meta_path.write_text(json.dumps({"name": session.worker.build_name,
+                                             "character": session.character,
+                                             "snapshot_id": session.snapshot_id}))
         except OSError as e:
             log.warning("could not save build %s: %s", session.id, e)
 
@@ -103,12 +112,20 @@ class SessionManager:
         session = Session(build_id)
         session.worker.xml_snapshot = xml_path.read_text()
         try:
-            session.worker.build_name = json.loads(meta_path.read_text()).get("name") or "build"
+            meta = json.loads(meta_path.read_text())
+            session.worker.build_name = meta.get("name") or "build"
+            session.character = meta.get("character")
+            session.snapshot_id = meta.get("snapshot_id")
         except (OSError, ValueError):
             pass
         self.sessions[build_id] = session
         log.info("restored build %s from disk", build_id)
         return session
+
+    def set_origin(self, session: Session, character: str | None, snapshot_id: str | None) -> None:
+        """Record which character and snapshot a working copy came from (saved with it)."""
+        session.character, session.snapshot_id = character, snapshot_id
+        self._persist(session)
 
     async def create(self) -> Session:
         session = Session(uuid.uuid4().hex[:12])
@@ -145,6 +162,7 @@ class SessionManager:
 
 sessions = SessionManager(MAX_WORKERS)
 history = snapshots.SnapshotStore(SNAPSHOT_DIR)
+chats = chatlog.ChatLog(CHAT_DIR)
 
 
 @asynccontextmanager
@@ -258,7 +276,11 @@ async def load_build(body: LoadBuild):
     except Exception:
         await sessions.delete(session.id)
         raise
-    return {"build_id": session.id, "summary": summary, "snapshot": _save_snapshot(xml, summary, body.character)}
+    snapshot = _save_snapshot(xml, summary, body.character)
+    character = snapshot["character"] if snapshot else \
+        ((body.character or "").strip() or snapshots.default_character(summary))
+    sessions.set_origin(session, character, snapshot["id"] if snapshot else None)
+    return {"build_id": session.id, "summary": summary, "snapshot": snapshot, "character": character}
 
 
 def _save_snapshot(xml: str, summary: dict, character: str | None) -> dict | None:
@@ -613,19 +635,51 @@ async def chat(build_id: str, body: ChatMessage):
         events: list[ToolEvent] = []
         agent.on_tool = events.append
         tokens_before = agent.tokens_used
+        recorder = _TurnRecorder(session, agent, body.message)
         try:
             answer = await agent.ask(body.message)
-        except (EngineError, EngineCrashed):
+        except (EngineError, EngineCrashed) as e:
+            recorder.record(events, error=str(e))
             raise
         except Exception as e:  # model endpoint down, VPN off, quota exhausted...
             log.warning("LLM request failed: %s", e)
+            recorder.record(events, error=f"language model request failed: {e}")
             raise HTTPException(502, f"language model request failed: {e}") from e
+        recorder.record(events, answer=answer)
         return {
             "answer": answer,
             "tool_calls": [_tool_json(e) for e in events],
             "tokens": agent.tokens_used - tokens_before,
             "model": agent.model,
         }
+
+
+class _TurnRecorder:
+    """Writes one question to the chat log, whatever happens to it. Logging problems are
+    reported, never raised: a full disk shouldn't stop the chat."""
+
+    def __init__(self, session: Session, agent: Agent, question: str):
+        self.session, self.agent, self.question = session, agent, question
+        self.start_len = len(agent.messages)
+        self.tokens_before = agent.tokens_used
+        self.started = time.monotonic()
+
+    def record(self, events: list[ToolEvent], answer: str | None = None, error: str | None = None) -> None:
+        s, agent = self.session, self.agent
+        # The first question also rewrites the system message (build context), so keep it.
+        # After an error the agent has rolled its messages back, so there is nothing new.
+        new = [] if error is not None else \
+            agent.messages[:] if self.start_len <= 1 else agent.messages[self.start_len:]
+        try:
+            if s.conversation_id is None:
+                s.conversation_id = chats.start(character=s.character, snapshot_id=s.snapshot_id,
+                                                build_id=s.id, model=agent.model)
+            chats.turn(s.conversation_id, question=self.question, answer=answer, error=error,
+                       tool_calls=[_tool_json(e) for e in events], messages=new,
+                       tokens=agent.tokens_used - self.tokens_before,
+                       duration_ms=round((time.monotonic() - self.started) * 1000))
+        except OSError as e:
+            log.error("could not write chat log: %s", e)
 
 
 def _tool_json(e: ToolEvent) -> dict:
@@ -648,12 +702,14 @@ async def chat_stream(build_id: str, body: ChatMessage):
 
     async def run() -> None:
         async with session.chat_lock:
+            recorder: _TurnRecorder | None = None
+            tools: list[ToolEvent] = []
             try:
                 if session.agent is None:
                     session.agent = make_agent(session)
                 agent = session.agent
                 tokens_before = agent.tokens_used
-                tools: list[ToolEvent] = []
+                recorder = _TurnRecorder(session, agent, body.message)
 
                 def on_tool(e: ToolEvent) -> None:
                     tools.append(e)
@@ -665,6 +721,7 @@ async def chat_stream(build_id: str, body: ChatMessage):
                     answer = await agent.ask(body.message)
                 finally:
                     agent.on_tool = agent.on_round = None
+                recorder.record(tools, answer=answer)
                 queue.put_nowait(("answer", {
                     "answer": answer,
                     "tool_calls": [_tool_json(e) for e in tools],
@@ -675,6 +732,8 @@ async def chat_stream(build_id: str, body: ChatMessage):
                 log.warning("chat failed: %s", e)
                 detail = str(e) if isinstance(e, (EngineError, settings.LLMNotConfigured)) \
                     else f"language model request failed: {e}"
+                if recorder:
+                    recorder.record(tools, error=detail)
                 queue.put_nowait(("error", {"detail": detail}))
             finally:
                 queue.put_nowait(None)
@@ -700,6 +759,7 @@ async def reset_chat(build_id: str):
     async with session.chat_lock:
         if session.agent:
             session.agent.reset()
+        session.conversation_id = None
 
 
 # -- snapshots: history of pasted builds --
@@ -737,7 +797,12 @@ async def get_snapshot(snap_id: str, include_xml: bool = False):
 @app.patch("/snapshots/{snap_id}")
 async def update_snapshot(snap_id: str, body: SnapshotUpdate):
     _snapshot(snap_id)
-    return snapshots.listing(history.rename(snap_id, body.character))
+    meta = history.rename(snap_id, body.character)
+    try:
+        chats.rename_character(snap_id, meta["character"])
+    except OSError as e:
+        log.error("could not move chats with snapshot %s: %s", snap_id, e)
+    return snapshots.listing(meta)
 
 
 @app.delete("/snapshots/{snap_id}", status_code=204)
@@ -759,7 +824,26 @@ async def load_snapshot(snap_id: str):
     except Exception:
         await sessions.delete(session.id)
         raise
-    return {"build_id": session.id, "summary": summary}
+    sessions.set_origin(session, meta["character"], snap_id)
+    return {"build_id": session.id, "summary": summary, "character": meta["character"],
+            "snapshot": {"id": snap_id, "character": meta["character"], "taken_at": meta["taken_at"],
+                         "created": False}}
+
+
+# -- chat history --
+
+@app.get("/chats")
+async def list_chats(character: str | None = None):
+    """Past conversations (optionally one character's), newest first."""
+    return chats.list(character)
+
+
+@app.get("/chats/{conv_id}")
+async def get_chat(conv_id: str):
+    """One conversation's questions, answers and tool calls."""
+    if not (conv := chats.get(conv_id)):
+        raise HTTPException(404, f"no conversation with id {conv_id}")
+    return conv
 
 
 # -- web app --

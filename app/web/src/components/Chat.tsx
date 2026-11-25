@@ -175,7 +175,7 @@ function Working({ progress }: { progress: Progress }) {
   )
 }
 
-function Entry({ entry }: { entry: ChatEntry }) {
+export function Entry({ entry }: { entry: ChatEntry }) {
   if (entry.role === 'user') return <div className="msg user">{entry.text}</div>
   if (entry.role === 'error') return <div className="msg error" role="alert">{entry.text}</div>
   const cards = (entry.toolCalls ?? []).filter((c) => c.ok && c.card)

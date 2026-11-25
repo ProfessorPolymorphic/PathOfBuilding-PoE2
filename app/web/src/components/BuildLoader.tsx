@@ -1,12 +1,17 @@
 import { useState } from 'react'
 
 interface Props {
-  onLoad: (code: string) => Promise<void>
+  onLoad: (code: string, character: string) => Promise<void>
   onCancel?: () => void
+  // Names already in the history, offered as suggestions.
+  characters: string[]
+  // Pre-filled: re-pasting the character you're looking at needs no typing.
+  defaultCharacter?: string
 }
 
-export function BuildLoader({ onLoad, onCancel }: Props) {
+export function BuildLoader({ onLoad, onCancel, characters, defaultCharacter }: Props) {
   const [code, setCode] = useState('')
+  const [character, setCharacter] = useState(defaultCharacter ?? '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -17,7 +22,7 @@ export function BuildLoader({ onLoad, onCancel }: Props) {
     setBusy(true)
     setError(null)
     try {
-      await onLoad(trimmed)
+      await onLoad(trimmed, character)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -40,6 +45,23 @@ export function BuildLoader({ onLoad, onCancel }: Props) {
         aria-label="Build code"
         autoFocus
       />
+      <label className="field">
+        <span>Character</span>
+        <input
+          value={character}
+          onChange={(e) => setCharacter(e.target.value)}
+          list="known-characters"
+          maxLength={60}
+          placeholder="Character name (leave empty to file it under its class)"
+          spellCheck={false}
+        />
+        <datalist id="known-characters">
+          {characters.map((c) => <option key={c} value={c} />)}
+        </datalist>
+        <span className="small-print muted">
+          The code doesn’t include the character’s name, so this is how the build joins that character’s history.
+        </span>
+      </label>
       {error && <p className="error" role="alert">{error}</p>}
       <div className="loader-actions">
         {onCancel && (

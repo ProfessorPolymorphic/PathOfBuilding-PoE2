@@ -281,6 +281,65 @@ export interface ChatReply {
   model: string
 }
 
+export interface Character {
+  character: string
+  snapshots: number
+  first_taken_at: string
+  last_taken_at: string
+  level: number | null
+  class: string | null
+  ascendancy: string | null
+}
+
+export interface SnapshotListing {
+  id: string
+  character: string
+  taken_at: string
+  level: number | null
+  class: string | null
+  ascendancy: string | null
+  main_skill: string | null
+  stats: Record<string, number | string>
+}
+
+export interface SnapshotRef {
+  id: string
+  character: string
+  taken_at: string
+  created: boolean
+}
+
+export interface LoadedBuild {
+  build_id: string
+  summary: BuildSummary
+  character: string
+  snapshot: SnapshotRef | null
+}
+
+export interface ChatSummary {
+  id: string
+  character: string | null
+  snapshot_id: string | null
+  started_at: string
+  last_at: string
+  model: string | null
+  title: string
+  turns: number
+}
+
+export interface ChatTurn {
+  at: string
+  question: string
+  answer: string | null
+  error: string | null
+  tool_calls: ToolCall[]
+  tokens: number | null
+}
+
+export interface Conversation extends Omit<ChatSummary, 'title' | 'turns' | 'last_at'> {
+  turns: ChatTurn[]
+}
+
 export interface Health {
   ok: boolean
   chat_configured: boolean
@@ -364,9 +423,17 @@ async function chatStream(id: string, message: string, onEvent: (e: ChatEvent) =
 export const api = {
   chatStream,
   health: () => request<Health>('GET', '/health'),
-  loadBuild: (code: string) =>
-    request<{ build_id: string; summary: BuildSummary }>('POST', '/builds', { code }),
+  loadBuild: (code: string, character?: string) =>
+    request<LoadedBuild>('POST', '/builds', { code, character: character?.trim() || undefined }),
+  characters: () => request<Character[]>('GET', '/characters'),
+  snapshots: (character: string) =>
+    request<SnapshotListing[]>('GET', `/snapshots?character=${encodeURIComponent(character)}`),
+  snapshotsDownloadUrl: (character: string) => `/snapshots?character=${encodeURIComponent(character)}`,
+  openSnapshot: (id: string) => request<LoadedBuild>('POST', `/snapshots/${id}/load`),
+  chats: (character: string) => request<ChatSummary[]>('GET', `/chats?character=${encodeURIComponent(character)}`),
+  conversation: (id: string) => request<Conversation>('GET', `/chats/${id}`),
   summary: (id: string) => request<BuildSummary>('GET', `/builds/${id}`),
+  deleteBuild: (id: string) => request<void>('DELETE', `/builds/${id}`),
   dashboard: (id: string) => request<Dashboard>('GET', `/builds/${id}/dashboard`),
   dashboardDownloadUrl: (id: string) => `/builds/${id}/dashboard?download=true`,
   distribution: (id: string, body: { skill: string | number; scenarios: ScenarioRequest[]; samples?: number; by_type?: boolean }) =>
